@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}检查{% endblock %}
+{% block content %}
+<div class="page-head"><h1>健康检查（Lint）</h1></div>
+
+<div class="lint-section">
+  <h2>断链 <span class="muted">· {{ broken|length }}</span></h2>
+  {% if broken|length == 0 %}
+  <p class="muted">没有断链，所有 [[引用]] 都指向存在的页面。</p>
+  {% else %}
+  <ul>
+    {% for src, target in broken %}
+    <li>
+      <a href="/pages/{{ src|urlquote }}">{{ src }}</a> 中的
+      <code>{{ target }}</code> 不存在 —
+      <a href="/pages/new?title={{ target|urlquote }}&type=concept">新建该页面</a>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>
+
+<div class="lint-section">
+  <h2>孤儿页 <span class="muted">· {{ orphans|length }}（没有任何入链）</span></h2>
+  {% if orphans|length == 0 %}
+  <p class="muted">没有孤儿页。</p>
+  {% else %}
+  <ul>
+    {% for p in orphans %}
+    <li><a href="/pages/{{ p.slug|urlquote }}">{{ p.title }}</a></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>
+
+<div class="lint-section">
+  <h2>无出链页面 <span class="muted">· {{ no_outlinks|length }}（提示信息）</span></h2>
+  {% if no_outlinks|length > 0 %}
+  <ul>
+    {% for s in no_outlinks %}
+    <li><a href="/pages/{{ s|urlquote }}">{{ s }}</a></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,25 @@
+# coral 配置文件。所有字段可选，缺省值见下方。
+# LLM 端点：任意 OpenAI 兼容服务（vLLM / 内网推理服务 / OpenAI 等）
+
+server:
+  host: "0.0.0.0"
+  port: 8300
+
+# 数据目录：wiki/、sources/、coral.db 都在其下。相对路径基于工作目录。
+data_dir: "./data"
+
+llm:
+  base_url: "http://127.0.0.1:8000/v1"   # OpenAI 兼容端点（含 /v1）
+  api_key: ""                            # 为空则不发送 Authorization 头
+  model: "qwen2.5-32b-instruct"
+  temperature: 0.3
+  max_output_tokens: 8192
+  timeout_seconds: 300
+  retry: 1
+
+ingest:
+  source_max_chars: 24000    # 源文档注入 prompt 的截断上限
+  analysis_max_chars: 16000  # 分析结果注入 Step2 的截断上限
+
+search:
+  results_per_page: 20

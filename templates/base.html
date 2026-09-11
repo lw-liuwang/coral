@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}coral{% endblock %} · coral</title>
+  <link rel="stylesheet" href="/static/coral.css">
+  <link rel="stylesheet" href="/static/pygments.css">
+  {% block head_extra %}{% endblock %}
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/">🪸 coral</a>
+  <nav>
+    <a href="/pages">页面</a>
+    <a href="/sources">来源</a>
+    <a href="/ingest">导入</a>
+    <a href="/lint">检查</a>
+  </nav>
+  <form class="searchbox" action="/search" method="get">
+    <input type="search" name="q" placeholder="搜索知识库…" value="{{ request.query_params.get('q', '') }}">
+  </form>
+</header>
+<main>
+{% block content %}{% endblock %}
+</main>
+<script src="/static/coral.js"></script>
+</body>
+</html>

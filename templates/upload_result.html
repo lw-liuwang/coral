@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}上传结果{% endblock %}
+{% block content %}
+<div class="page-head"><h1>上传结果</h1></div>
+
+{% if saved %}
+<p>已保存 {{ saved|length }} 个文件：</p>
+<ul>
+  {% for s in saved %}<li>{{ s }}</li>{% endfor %}
+</ul>
+{% endif %}
+
+{% if rejected %}
+<div class="alert">以下文件被拒绝（仅支持 .md / .markdown / .txt）：
+  {{ rejected|join("、") }}
+</div>
+{% endif %}
+
+{% if queued %}
+<p>已加入导入队列：{{ queued|join("、") }}</p>
+<p><a class="btn primary" href="/ingest">查看导入进度 →</a></p>
+{% elif saved %}
+<p><a href="/sources">← 返回来源列表</a></p>
+{% endif %}
+{% endblock %}

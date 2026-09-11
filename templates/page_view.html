@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}{{ fm.get("title", slug) }}{% endblock %}
+{% block content %}
+
+{% if warnings %}
+<div class="alert">{{ warnings|join("；") }}</div>
+{% endif %}
+
+<div class="page-head">
+  <h1>{{ fm.get("title", slug) }}</h1>
+  <span class="btns">
+    <a class="btn" href="/pages/{{ slug|urlquote }}/edit">编辑</a>
+    <form class="inline" action="/pages/{{ slug|urlquote }}/delete" method="post"
+          onsubmit="return confirmDelete('「{{ fm.get("title", slug) }}」')">
+      <button class="btn danger" type="submit">删除</button>
+    </form>
+  </span>
+</div>
+
+<details class="meta" {% if not fm %}open{% endif %}>
+  <summary>页面信息</summary>
+  <dl>
+    <dt>类型</dt><dd><span class="tag">{{ TYPE_LABELS.get(type, type) }} / {{ type }}</span></dd>
+    {% if fm.get("created") %}<dt>创建</dt><dd>{{ fm.created }}</dd>{% endif %}
+    {% if fm.get("updated") %}<dt>更新</dt><dd>{{ fm.updated }}</dd>{% endif %}
+    {% if fm.get("tags") %}
+    <dt>标签</dt><dd>{% for t in fm.tags %}<span class="tag">{{ t }}</span> {% endfor %}</dd>
+    {% endif %}
+    {% if fm.get("related") %}
+    <dt>关联</dt><dd>
+      {% for r in fm.related %}
+      {% if r in existing %}
+      <a href="/pages/{{ r|urlquote }}">{{ r }}</a>
+      {% else %}
+      <a class="broken" title="页面不存在" href="/pages/new?title={{ r|urlquote }}">{{ r }}</a>
+      {% endif %}
+      {% endfor %}
+    </dd>
+    {% endif %}
+    {% if fm.get("sources") %}
+    <dt>来源</dt><dd>{% for s in fm.sources %}<a href="/sources/view/{{ s|urlquote }}">{{ s }}</a> {% endfor %}</dd>
+    {% endif %}
+  </dl>
+</details>
+
+<article class="md-body">
+{{ html|safe }}
+</article>
+
+{% if backlinks %}
+<section class="backlinks">
+  <h3>入链（{{ backlinks|length }}）</h3>
+  <ul>
+    {% for b in backlinks %}
+    <li><a href="/pages/{{ b.slug|urlquote }}">{{ b.title }}</a></li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+{% endblock %}

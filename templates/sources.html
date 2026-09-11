@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}来源{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>来源文件 <span class="muted">raw notes</span></h1>
+</div>
+
+<form class="form" action="/sources/upload" method="post" enctype="multipart/form-data">
+  <label>选择文件（.md / .markdown / .txt，可多选）
+    <input type="file" name="files" multiple accept=".md,.markdown,.txt" required>
+  </label>
+  <label class="checkbox">
+    <input type="checkbox" name="auto_ingest" value="true" checked>
+    上传后自动导入（LLM 两步分析 → 生成 wiki 页面）
+  </label>
+  <button class="btn primary" type="submit">上传</button>
+</form>
+
+<table class="files">
+  <thead>
+    <tr><th>文件名</th><th>大小</th><th>修改时间</th><th>操作</th></tr>
+  </thead>
+  <tbody>
+    {% for f in files %}
+    <tr>
+      <td><a href="/sources/view/{{ f.name|urlquote }}">{{ f.name }}</a></td>
+      <td>{{ f.size_kb }} KB</td>
+      <td>{{ f.mtime }}</td>
+      <td>
+        <form class="inline" action="/ingest" method="post">
+          <input type="hidden" name="source" value="{{ f.name }}">
+          <button class="btn" type="submit">导入</button>
+        </form>
+        <form class="inline" action="/sources/{{ f.name|urlquote }}/delete" method="post"
+              onsubmit="return confirmDelete('{{ f.name }}')">
+          <button class="btn danger" type="submit">删除</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+    {% if files|length == 0 %}
+    <tr><td colspan="4" class="muted">还没有来源文件。</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+{% endblock %}

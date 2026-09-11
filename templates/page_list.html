@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}页面{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Wiki 页面 <span class="muted">共 {{ total }} 页</span></h1>
+  <a class="btn" href="/pages/new">＋ 新建页面</a>
+</div>
+
+{% if groups|length == 0 %}
+<div class="empty">
+  <p>知识库还是空的。</p>
+  <p>从 <a href="/sources">来源</a> 上传第一份笔记，或 <a href="/pages/new">手动新建</a> 一个页面。</p>
+</div>
+{% endif %}
+
+{% for t, label, group in groups %}
+<section class="type-group">
+  <h2>{{ label }} <span class="muted">· {{ group|length }}</span></h2>
+  <ul class="page-list">
+    {% for p in group %}
+    <li>
+      <a class="page-link" href="/pages/{{ p.slug|urlquote }}">{{ p.title }}</a>
+      <span class="tags">
+        {% for tag in p.tags %}<span class="tag">{{ tag }}</span>{% endfor %}
+      </span>
+      {% if p.updated %}<span class="muted">更新于 {{ p.updated }}</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endfor %}
+{% endblock %}

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}编辑 {{ date }}{% endblock %}
+{% block content %}
+<div class="page-head"><h1>编辑 {{ date }}</h1></div>
+
+{% if error %}<div class="alert">{{ error }}</div>{% endif %}
+
+<form class="form" action="/journal/{{ date }}/edit" method="post">
+  <textarea name="content" rows="20" spellcheck="false">{{ raw }}</textarea>
+  <button class="btn primary" type="submit">保存</button>
+  <a class="btn" href="/journal/{{ date }}">取消</a>
+</form>
+{% endblock %}

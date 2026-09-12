@@ -97,9 +97,17 @@ class SearchIndex:
             assert self._conn is not None
             row = self._conn.execute("SELECT COUNT(*) FROM pages_fts").fetchone()
             disk_count = len(store.list_pages()) + len(paths.list_source_files(store.data_dir))
+            disk_count += self._count_dir(paths.journal_root(store.data_dir))
+            disk_count += self._count_dir(paths.jobs_root(store.data_dir))
             if row and row[0] == disk_count:
                 return
             self._rebuild_locked(store)
+
+    @staticmethod
+    def _count_dir(root: str) -> int:
+        if not os.path.isdir(root):
+            return 0
+        return sum(1 for f in os.listdir(root) if f.endswith(".md"))
 
     def rebuild(self, store: WikiStore) -> None:
         with self._lock:
@@ -122,6 +130,19 @@ class SearchIndex:
             except OSError:
                 continue
             self._insert_row(name, "source", name, content)
+        # 日记
+        from .journal import JournalStore
+        journal = JournalStore(store.data_dir)
+        for day in journal.list_days(limit=100000):
+            text = journal.get_day(day.date)
+            if text is not None:
+                self._insert_row(day.date, "journal", f"日记 {day.date}", text)
+        # 求职记录
+        from .jobs import JobsStore
+        for job in JobsStore(store.data_dir).list_jobs():
+            title = job.company + (f" · {job.position}" if job.position else "")
+            self._insert_row(job.slug, "job", title,
+                             f"{job.company} {job.position} {job.status}\n{job.body}")
         self._conn.commit()
 
     def _insert_row(self, slug: str, kind: str, title: str, body: str) -> None:

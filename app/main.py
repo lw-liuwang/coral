@@ -28,6 +28,10 @@ def create_app(config: Config = None) -> FastAPI:
     from routes import search as search_routes
     from routes import lint as lint_routes
     from routes import sources as sources_routes
+    from routes import journal as journal_routes
+    from routes import jobs as jobs_routes
+    app.include_router(journal_routes.router)
+    app.include_router(jobs_routes.router)
     app.include_router(pages_routes.router)
     app.include_router(sources_routes.router)
     app.include_router(ingest_routes.router)

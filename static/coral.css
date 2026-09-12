@@ -192,3 +192,45 @@ table.files th, table.files td {
   border: 1px solid var(--border); padding: 0.4rem 0.7rem; text-align: left; font-size: 0.92rem;
 }
 table.files th { background: var(--code-bg); }
+
+/* ===== 日记 ===== */
+.quick-write {
+  background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+  padding: 1rem; margin-bottom: 2rem;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+.quick-write textarea {
+  width: 100%; border: 1px solid var(--border); border-radius: 8px;
+  padding: 0.7rem; font: inherit; resize: vertical; background: var(--bg);
+}
+.quick-write textarea:focus { border-color: var(--accent); outline: none; }
+.quick-write-actions { display: flex; justify-content: space-between; align-items: center; margin-top: 0.6rem; }
+.timeline h2 { font-size: 1.1rem; }
+.timeline-day { padding: 0.5rem 0; border-bottom: 1px dashed var(--border); }
+.day-link { display: flex; gap: 0.7rem; align-items: center; }
+.day-date { font-weight: 600; color: var(--fg); }
+.day-preview { margin-left: 0.2rem; }
+
+/* ===== 求职 ===== */
+.job-table { width: 100%; border-collapse: collapse; background: var(--card); }
+.job-table th, .job-table td {
+  border: 1px solid var(--border); padding: 0.45rem 0.7rem; text-align: left; font-size: 0.92rem;
+}
+.job-table th { background: var(--code-bg); font-weight: 600; }
+.job-table tr:hover td { background: #fbf7f0; }
+.ended-head { margin-top: 1.6rem; }
+.next-date { font-weight: 600; color: var(--accent-dark); }
+.tag.status-offer { background: #e5f2e8; color: #2c7a3f; }
+.tag.status-挂, .tag.status-放弃 { background: #f1f2f4; color: #6e7781; }
+.tag.status-面试 { background: #fdf0e0; color: #9a5b00; }
+.tag.status-笔试 { background: #eaf1fb; color: #3b5e9e; }
+.panel {
+  background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+  padding: 0.9rem 1rem; margin: 1.2rem 0;
+}
+.panel h3 { margin-top: 0; font-size: 1rem; color: var(--muted); }
+.advance-row { display: flex; gap: 1.2rem; flex-wrap: wrap; }
+.advance-row label { flex: 1; min-width: 200px; }
+.panel textarea { width: 100%; border: 1px solid var(--border); border-radius: 8px; padding: 0.6rem; font: inherit; resize: vertical; }
+.panel textarea:focus { border-color: var(--accent); outline: none; }
+.nav-minor { font-size: 0.85rem; opacity: 0.75; }

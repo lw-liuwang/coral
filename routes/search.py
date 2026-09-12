@@ -27,6 +27,12 @@ def search(request: Request, q: str = "", page: int = 1):
                 else:
                     r["title"] = r["slug"]
                 r["url"] = "/pages/" + r["slug"]
+            elif r["kind"] == "journal":
+                r["title"] = f"日记 {r['slug']}"
+                r["url"] = "/journal/" + r["slug"]
+            elif r["kind"] == "job":
+                r["title"] = r["title"] or r["slug"]
+                r["url"] = "/jobs/" + r["slug"]
             else:
                 # source slug = 完整文件名
                 r["title"] = r["slug"]

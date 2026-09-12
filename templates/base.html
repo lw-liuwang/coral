@@ -12,13 +12,15 @@
 <header class="topbar">
   <a class="brand" href="/">🪸 coral</a>
   <nav>
-    <a href="/pages">页面</a>
-    <a href="/sources">来源</a>
-    <a href="/ingest">导入</a>
-    <a href="/lint">检查</a>
+    <a href="/">日记</a>
+    <a href="/jobs">求职</a>
+    <a href="/pages">知识库</a>
+    <a href="/sources">资料</a>
+    <a href="/ingest" class="nav-minor">整理</a>
+    <a href="/lint" class="nav-minor">体检</a>
   </nav>
   <form class="searchbox" action="/search" method="get">
-    <input type="search" name="q" placeholder="搜索知识库…" value="{{ request.query_params.get('q', '') }}">
+    <input type="search" name="q" placeholder="搜索…" value="{{ request.query_params.get('q', '') }}">
   </form>
 </header>
 <main>

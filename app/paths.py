@@ -13,10 +13,30 @@ def init_data_dirs(data_dir: str) -> None:
     """启动时创建目录骨架（幂等）。"""
     os.makedirs(data_dir, exist_ok=True)
     os.makedirs(os.path.join(data_dir, "sources"), exist_ok=True)
+    os.makedirs(os.path.join(data_dir, "journal"), exist_ok=True)
+    os.makedirs(os.path.join(data_dir, "jobs"), exist_ok=True)
     wiki = os.path.join(data_dir, "wiki")
     os.makedirs(wiki, exist_ok=True)
     for sub in WIKI_DIRS.values():
         os.makedirs(os.path.join(wiki, sub), exist_ok=True)
+
+
+def journal_root(data_dir: str) -> str:
+    return os.path.join(data_dir, "journal")
+
+
+def jobs_root(data_dir: str) -> str:
+    return os.path.join(data_dir, "jobs")
+
+
+def is_valid_date(s: str) -> bool:
+    """YYYY-MM-DD 且真实存在。"""
+    import datetime
+    try:
+        datetime.date.fromisoformat(s)
+    except (ValueError, TypeError):
+        return False
+    return True
 
 
 def wiki_root(data_dir: str) -> str:

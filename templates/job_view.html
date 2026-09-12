@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}{{ job.company }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>{{ job.company }}{% if job.position %} <span class="muted">· {{ job.position }}</span>{% endif %}</h1>
+  <span class="btns">
+    <form class="inline" action="/jobs/{{ job.slug|urlquote }}/delete" method="post"
+          onsubmit="return confirmDelete('「{{ job.company }}」的投递记录')">
+      <button class="btn danger" type="submit">删除</button>
+    </form>
+    <a class="btn" href="/jobs">← 求职表格</a>
+  </span>
+</div>
+
+<details class="meta" open>
+  <summary>状态</summary>
+  <dl>
+    <dt>当前状态</dt><dd><span class="tag status-{{ job.status }}">{{ job.status }}</span></dd>
+    {% if job.applied %}<dt>投递日期</dt><dd>{{ job.applied }}</dd>{% endif %}
+    {% if job.next %}<dt>下一步</dt><dd><span class="next-date">{{ job.next }}</span></dd>{% endif %}
+    <dt>最近动态</dt><dd>{{ job.updated }}</dd>
+  </dl>
+</details>
+
+<div class="panel advance-panel">
+  <h3>推进状态</h3>
+  <form class="form" action="/jobs/{{ job.slug|urlquote }}/advance" method="post">
+    <div class="advance-row">
+      <label>状态
+        <select name="status">
+          {% for s in statuses %}
+          <option value="{{ s }}" {% if s == default_next %}selected{% endif %}>{{ s }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>下一步时间（如约好的面试，可留空）
+        <input type="date" name="next_date" value="{{ job.next }}">
+      </label>
+    </div>
+    <label>进展备注（面了什么、感受，可留空）</label>
+    <textarea name="note" rows="3"></textarea>
+    <button class="btn primary" type="submit">推进</button>
+  </form>
+</div>
+
+<article class="md-body">
+{{ html|safe }}
+</article>
+
+<div class="panel retro-panel">
+  <h3>追加复盘</h3>
+  <form class="form" action="/jobs/{{ job.slug|urlquote }}/retro" method="post">
+    <textarea name="content" rows="5" placeholder="这次面得怎么样？哪些没答好？下次注意什么？"></textarea>
+    <button class="btn primary" type="submit">写下复盘</button>
+  </form>
+</div>
+{% endblock %}

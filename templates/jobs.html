@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}求职{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>求职跟踪 <span class="muted">进行中 {{ active|length }} · 已结束 {{ ended|length }}</span></h1>
+  <a class="btn primary" href="/jobs/new">＋ 记一次投递</a>
+</div>
+
+{% if active|length == 0 and ended|length == 0 %}
+<div class="empty"><p>还没有投递记录。点「记一次投递」开始。</p></div>
+{% endif %}
+
+{% if active|length > 0 %}
+<table class="job-table">
+  <thead><tr><th>公司</th><th>岗位</th><th>状态</th><th>投递</th><th>下一步 / 最近动态</th></tr></thead>
+  <tbody>
+    {% for j in active %}
+    <tr>
+      <td><a href="/jobs/{{ j.slug|urlquote }}">{{ j.company }}</a></td>
+      <td class="muted">{{ j.position or "—" }}</td>
+      <td><span class="tag status-{{ j.status }}">{{ j.status }}</span></td>
+      <td class="muted">{{ j.applied }}</td>
+      <td>{% if j.next %}<span class="next-date">{{ j.next }}</span>{% else %}<span class="muted">{{ j.updated }}</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if ended|length > 0 %}
+<h2 class="ended-head muted">已结束</h2>
+<table class="job-table ended">
+  <tbody>
+    {% for j in ended %}
+    <tr>
+      <td><a href="/jobs/{{ j.slug|urlquote }}">{{ j.company }}</a></td>
+      <td class="muted">{{ j.position or "—" }}</td>
+      <td><span class="tag status-{{ j.status }}">{{ j.status }}</span></td>
+      <td class="muted">{{ j.applied }}</td>
+      <td class="muted">{{ j.updated }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

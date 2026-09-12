@@ -15,6 +15,8 @@
 <div class="result-item">
   <a href="{{ r.url }}">
     {% if r.kind == "wiki" %}<span class="tag">页面</span>
+    {% elif r.kind == "journal" %}<span class="tag">日记</span>
+    {% elif r.kind == "job" %}<span class="tag">求职</span>
     {% else %}<span class="tag">来源</span>{% endif %}
     {{ r.title }}
   </a>

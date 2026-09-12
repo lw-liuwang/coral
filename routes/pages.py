@@ -38,11 +38,6 @@ def _after_write(request: Request, slug: str) -> None:
             rt.search.remove_page(slug)
 
 
-@router.get("/")
-def home():
-    return RedirectResponse("/pages", status_code=302)
-
-
 @router.get("/pages")
 def page_list(request: Request, type: Optional[str] = None):
     rt = _rt(request)

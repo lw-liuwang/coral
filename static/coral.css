@@ -234,3 +234,20 @@ table.files th { background: var(--code-bg); }
 .panel textarea { width: 100%; border: 1px solid var(--border); border-radius: 8px; padding: 0.6rem; font: inherit; resize: vertical; }
 .panel textarea:focus { border-color: var(--accent); outline: none; }
 .nav-minor { font-size: 0.85rem; opacity: 0.75; }
+
+/* ===== 知识库首页 ===== */
+.kb-templates h2, .kb-wiki h2 { font-size: 1.15rem; }
+.template-cards { display: flex; gap: 1rem; flex-wrap: wrap; margin: 0.6rem 0 1.6rem; }
+.template-card {
+  display: block; width: 240px; padding: 0.9rem 1rem;
+  background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04); color: var(--fg);
+}
+.template-card:hover { border-color: var(--accent); text-decoration: none; }
+.template-card:hover .template-name { color: var(--accent-dark); }
+.muted-card { opacity: 0.55; }
+.template-name { font-weight: 600; margin-bottom: 0.2rem; }
+.template-desc { color: var(--muted); font-size: 0.85rem; margin-bottom: 0.5rem; }
+.template-stat { display: flex; gap: 0.4rem; }
+.kb-group h3 { font-size: 1rem; margin-bottom: 0.3rem; }
+.kb-group-more { font-size: 0.85rem; margin-left: 0.5rem; }

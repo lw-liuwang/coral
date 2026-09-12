@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}知识库{% endblock %}
+{% block content %}
+<div class="page-head"><h1>知识库</h1></div>
+
+<section class="kb-templates">
+  <h2>跟踪模板</h2>
+  <div class="template-cards">
+    <a class="template-card" href="/jobs">
+      <div class="template-name">求职跟踪</div>
+      <div class="template-desc">每次投递一行，记录进度与复盘</div>
+      <div class="template-stat">
+        <span class="tag">进行中 {{ jobs_active }}</span>
+        <span class="tag">已结束 {{ jobs_ended }}</span>
+      </div>
+    </a>
+    <div class="template-card muted-card">
+      <div class="template-name">更多模板…</div>
+      <div class="template-desc">读书、项目、健身等（规划中）</div>
+    </div>
+  </div>
+</section>
+
+<section class="kb-wiki">
+  <h2>整理的知识 <span class="muted">· {{ total }} 页 · 由导入文档自动整理</span></h2>
+  {% if total == 0 %}
+  <div class="empty">
+    <p>还没有整理的知识。去 <a href="/sources">资料</a> 上传第一份笔记，勾选「自动导入」。</p>
+  </div>
+  {% endif %}
+  {% for t, label, group, count in groups %}
+  <div class="kb-group">
+    <h3>{{ label }} <span class="muted">· {{ count }}</span>
+      <a class="muted kb-group-more" href="/pages?type={{ t }}">全部 →</a></h3>
+    <ul class="page-list">
+      {% for p in group %}
+      <li><a class="page-link" href="/pages/{{ p.slug|urlquote }}">{{ p.title }}</a>
+        {% if p.updated %}<span class="muted">{{ p.updated }}</span>{% endif %}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endfor %}
+</section>
+{% endblock %}

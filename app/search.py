@@ -130,13 +130,13 @@ class SearchIndex:
             except OSError:
                 continue
             self._insert_row(name, "source", name, content)
-        # 日记
+        # 随手记
         from .journal import JournalStore
         journal = JournalStore(store.data_dir)
         for day in journal.list_days(limit=100000):
             text = journal.get_day(day.date)
             if text is not None:
-                self._insert_row(day.date, "journal", f"日记 {day.date}", text)
+                self._insert_row(day.date, "journal", f"随手记 {day.date}", text)
         # 求职记录
         from .jobs import JobsStore
         for job in JobsStore(store.data_dir).list_jobs():

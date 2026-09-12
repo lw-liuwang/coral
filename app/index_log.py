@@ -5,7 +5,7 @@ from typing import Iterable, List, Optional
 from . import paths
 from .wiki import PageMeta, WikiStore
 
-TYPE_LABELS = {"entity": "实体", "concept": "概念", "source": "来源", "note": "随手记"}
+TYPE_LABELS = {"entity": "实体", "concept": "概念", "source": "来源", "note": "随手记页"}
 TYPE_ORDER = ("entity", "concept", "note", "source")
 
 

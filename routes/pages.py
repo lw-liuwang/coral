@@ -38,6 +38,24 @@ def _after_write(request: Request, slug: str) -> None:
             rt.search.remove_page(slug)
 
 
+@router.get("/kb")
+def kb_home(request: Request):
+    """知识库首页：模板区（求职跟踪等）+ 整理的知识（wiki 分组摘要）。"""
+    rt = _rt(request)
+    from app.jobs import JobsStore
+    active, ended = JobsStore(rt.store.data_dir).sorted_jobs()
+    pages = rt.store.list_pages()
+    groups = []
+    for t in index_log.TYPE_ORDER:
+        group = [p for p in pages if p.type == t]
+        if group:
+            groups.append((t, index_log.TYPE_LABELS[t], group[:5], len(group)))
+    return templates.TemplateResponse("kb.html", {
+        "request": request, "groups": groups, "total": len(pages),
+        "jobs_active": len(active), "jobs_ended": len(ended),
+    })
+
+
 @router.get("/pages")
 def page_list(request: Request, type: Optional[str] = None):
     rt = _rt(request)
@@ -56,7 +74,7 @@ def page_list(request: Request, type: Optional[str] = None):
 
 
 @router.get("/pages/new")
-def page_new_form(request: Request, title: str = "", type: str = "note"):
+def page_new_form(request: Request, title: str = "", type: str = "concept"):
     return templates.TemplateResponse("page_new.html", {
         "request": request, "title": title, "type": type, "error": None,
     })
@@ -71,7 +89,7 @@ def page_new_create(request: Request, title: str = Form(...), type: str = Form(.
         return templates.TemplateResponse("page_new.html", {
             "request": request, "title": "", "type": type, "error": "标题不能为空"}, status_code=400)
     if type not in paths.PAGE_TYPES:
-        type = "note"
+        type = "concept"
     slug = rt.store.unique_slug(title)
     today = _today()
     body = content

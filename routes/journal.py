@@ -1,4 +1,4 @@
-"""日记路由：首页写作框 + 时间线；按日查看/编辑。"""
+"""随手记路由：首页写作框 + 按日查看/编辑，时间后台记录。"""
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import RedirectResponse
 from urllib.parse import quote
@@ -24,7 +24,7 @@ def _after_write(request: Request, date: str) -> None:
     if rt.search:
         text = _journal(request).get_day(date)
         if text is not None:
-            rt.search.index_page(date, "journal", f"日记 {date}", text)
+            rt.search.index_page(date, "journal", f"随手记 {date}", text)
 
 
 @router.get("/")
@@ -60,7 +60,7 @@ def journal_day(request: Request, date: str):
             "request": request, "message": f"日期不合法: {date}"}, status_code=400)
     if text is None:
         return templates.TemplateResponse("error.html", {
-            "request": request, "message": f"这天没有日记: {date}"}, status_code=404)
+            "request": request, "message": f"这天没有随手记: {date}"}, status_code=404)
     from app.journal import WEEKDAYS
     import datetime as _dt
     weekday = WEEKDAYS[_dt.date.fromisoformat(date).weekday()]
@@ -82,7 +82,7 @@ def journal_edit_form(request: Request, date: str):
             "request": request, "message": f"日期不合法: {date}"}, status_code=400)
     if text is None:
         return templates.TemplateResponse("error.html", {
-            "request": request, "message": f"这天没有日记: {date}"}, status_code=404)
+            "request": request, "message": f"这天没有随手记: {date}"}, status_code=404)
     return templates.TemplateResponse("journal_edit.html", {
         "request": request, "date": date, "raw": text, "error": None,
     })

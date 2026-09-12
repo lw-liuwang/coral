@@ -1,20 +1,20 @@
 {% extends "base.html" %}
-{% block title %}日记{% endblock %}
+{% block title %}随手记{% endblock %}
 {% block content %}
 <div class="page-head"><h1>今天想写点什么</h1><span class="muted">{{ today }}</span></div>
 
 <form class="quick-write" action="/journal/write" method="post">
-  <textarea name="content" rows="4" placeholder="心情、今天发生的事、一个想法…&#10;第一行不必是标题，直接写就好" autofocus></textarea>
+  <textarea name="content" rows="4" placeholder="心情、今天发生的事、一个想法…&#10;直接写就好，时间会自动记下" autofocus></textarea>
   <div class="quick-write-actions">
-    <span class="hint">保存到今天的日记，随时可以再写。</span>
+    <span class="hint">保存到今天，随时可以再写。</span>
     <button class="btn primary" type="submit">写下来</button>
   </div>
 </form>
 
 <section class="timeline">
-  <h2>时间线</h2>
+  <h2>最近的随手记</h2>
   {% if days|length == 0 %}
-  <div class="empty"><p>还没有日记。上面写下第一条吧。</p></div>
+  <div class="empty"><p>还没有内容。上面写下第一条吧。</p></div>
   {% endif %}
   {% for d in days %}
   <div class="timeline-day">

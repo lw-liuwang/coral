@@ -9,7 +9,7 @@ COPY routes/ routes/
 COPY templates/ templates/
 COPY static/ static/
 COPY tools/ tools/
-COPY config.yaml config.yaml
+COPY config.example.yaml config.yaml
 
 ENV CORAL_DATA_DIR=/data
 VOLUME /data

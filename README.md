@@ -32,6 +32,13 @@ python-multipart / Markdown / Pygments）。无 Node.js、无前端构建、无�
 
 ## 配置 LLM
 
+`config.yaml` 不入库（避免误提交密钥）；从 git clone 使用时先复制模板（也可以不复制，
+全部字段都有默认值）：
+
+```bash
+cp config.example.yaml config.yaml
+```
+
 编辑 `config.yaml`，把 `llm.base_url` 指向任意 OpenAI 兼容端点（vLLM / 内网推理服务）：
 
 ```yaml
@@ -118,3 +125,7 @@ pytest tests/ -v
 - PDF / Word 导入
 - 向量语义搜索
 - 长文档分块 ingest
+
+## License
+
+[MIT](LICENSE)

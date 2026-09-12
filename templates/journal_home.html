@@ -1,29 +1,24 @@
 {% extends "base.html" %}
 {% block title %}随手记{% endblock %}
 {% block content %}
-<div class="page-head"><h1>今天想写点什么</h1><span class="muted">{{ today }}</span></div>
-
 <form class="quick-write" action="/journal/write" method="post">
-  <textarea name="content" rows="4" placeholder="心情、今天发生的事、一个想法…&#10;直接写就好，时间会自动记下" autofocus></textarea>
+  <textarea name="content" rows="8" placeholder="想写点什么就写什么…&#10;时间会自动记下，一条就是一条" autofocus></textarea>
   <div class="quick-write-actions">
-    <span class="hint">保存到今天，随时可以再写。</span>
+    <span class="hint">哪怕只点一下「写下来」，也会记下这个时刻。</span>
     <button class="btn primary" type="submit">写下来</button>
   </div>
 </form>
 
-<section class="timeline">
-  <h2>最近的随手记</h2>
-  {% if days|length == 0 %}
+<section class="entry-stream">
+  {% if entries|length == 0 %}
   <div class="empty"><p>还没有内容。上面写下第一条吧。</p></div>
   {% endif %}
-  {% for d in days %}
-  <div class="timeline-day">
-    <a class="day-link" href="/journal/{{ d.date }}">
-      <span class="day-date">{{ d.date }}</span>
-      <span class="muted">{{ d.weekday }}</span>
-      <span class="tag">{{ d.entries }} 条</span>
+  {% for e in entries %}
+  <div class="entry-item">
+    <a class="entry-link" href="/journal/{{ e.entry_id|urlquote }}">
+      <span class="entry-time">{{ e.date }} {{ e.time }}</span>
+      <span class="entry-preview">{{ e.preview if e.preview else "（空白，仅时间戳）" }}</span>
     </a>
-    {% if d.preview %}<div class="day-preview muted">{{ d.preview }}</div>{% endif %}
   </div>
   {% endfor %}
 </section>

@@ -1,32 +1,32 @@
-"""日记：每天一个文件（journal/YYYY-MM-DD.md），追加式写入。
+"""随手记：一条记录 = 一个文件（journal/YYYY-MM-DD_HH-MM-SS.md）。
 
-用户只管写（心情、今天发生的事），时间整理交给应用：
-- 首次写入当天自动创建当日文件
-- 每次保存追加一个 `## HH:MM` 小节
-- 无 frontmatter、无类型选择，纯 Markdown
+用户只负责写；时间完全由系统后台记录（文件名即时间戳）。
+没有「天」「文件」概念暴露给用户——界面上只有一条条记录。
+空内容也允许保存（落一条只有时间戳的记录）。
 """
-import datetime
 import os
 import re
-from typing import List, Optional, Tuple
+import threading
+from typing import List, Optional
 
 from . import paths
 from .wiki import WRITE_LOCK
 
-_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-WEEKDAYS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+# entry_id 形如 2026-09-12_16-34-45（同秒冲突追加 -1、-2…）
+ENTRY_ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(?:-\d+)?$")
+_TIMESTAMP_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})")
 
 
-class DaySummary:
-    __slots__ = ("date", "weekday", "entries", "preview", "path")
+class EntrySummary:
+    __slots__ = ("entry_id", "date", "time", "preview", "empty")
 
-    def __init__(self, date: str, weekday: str, entries: int,
-                 preview: str, path: str) -> None:
+    def __init__(self, entry_id: str, date: str, time: str,
+                 preview: str, empty: bool) -> None:
+        self.entry_id = entry_id
         self.date = date
-        self.weekday = weekday
-        self.entries = entries
+        self.time = time
         self.preview = preview
-        self.path = path
+        self.empty = empty
 
 
 class JournalStore:
@@ -35,89 +35,79 @@ class JournalStore:
 
     # ---------- 路径 ----------
 
-    def day_path(self, date: str) -> str:
-        if not _DATE_RE.match(date or "") or not paths.is_valid_date(date):
-            raise ValueError(f"非法日期: {date!r}")
-        return os.path.join(paths.journal_root(self.data_dir), date + ".md")
-
-    @staticmethod
-    def today() -> str:
-        return datetime.date.today().isoformat()
+    def entry_path(self, entry_id: str) -> str:
+        if not ENTRY_ID_RE.match(entry_id or ""):
+            raise ValueError(f"非法记录 id: {entry_id!r}")
+        return os.path.join(paths.journal_root(self.data_dir), entry_id + ".md")
 
     # ---------- 读取 ----------
 
-    def get_day(self, date: str) -> Optional[str]:
-        """返回当天文件原文；不存在返回 None。"""
-        p = self.day_path(date)
+    def get_entry(self, entry_id: str) -> Optional[str]:
+        """返回记录原文；不存在返回 None。空内容记录返回 ''。"""
+        p = self.entry_path(entry_id)
         if not os.path.isfile(p):
             return None
         with open(p, "r", encoding="utf-8") as f:
             return f.read()
 
-    def list_days(self, limit: int = 30) -> List[DaySummary]:
-        """按日期倒序的日记概览（条数 = ## 小节数，预览 = 首个非标题行）。"""
+    def list_entries(self, limit: int = 50) -> List[EntrySummary]:
+        """按时间倒序的记录流（文件名字典序 = 时间序）。"""
         root = paths.journal_root(self.data_dir)
         if not os.path.isdir(root):
             return []
-        out: List[DaySummary] = []
-        for fname in sorted(os.listdir(root), reverse=True):
-            if not fname.endswith(".md"):
+        names = sorted((f for f in os.listdir(root) if f.endswith(".md")),
+                       reverse=True)
+        out: List[EntrySummary] = []
+        for fname in names:
+            entry_id = fname[:-3]
+            if not ENTRY_ID_RE.match(entry_id):
                 continue
-            date = fname[:-3]
-            if not _DATE_RE.match(date):
-                continue
-            p = os.path.join(root, fname)
             try:
-                with open(p, "r", encoding="utf-8") as f:
+                with open(os.path.join(root, fname), "r", encoding="utf-8") as f:
                     text = f.read()
             except OSError:
                 continue
-            entries = sum(1 for line in text.split("\n")
-                          if line.startswith("## "))
-            preview = next((l.strip() for l in text.split("\n")
-                            if l.strip() and not l.startswith("#")), "")
-            d = datetime.date.fromisoformat(date)
-            out.append(DaySummary(date, WEEKDAYS[d.weekday()], entries,
-                                  preview[:60], p))
+            preview = next((l.strip() for l in text.split("\n") if l.strip()), "")
+            out.append(EntrySummary(
+                entry_id=entry_id,
+                date=entry_id[:10],
+                time=entry_id[11:19],
+                preview=preview[:80],
+                empty=not preview,
+            ))
             if len(out) >= limit:
                 break
         return out
 
     # ---------- 写入 ----------
 
-    def append_entry(self, content: str, date: Optional[str] = None) -> Tuple[str, int]:
-        """追加一条日记（## HH:MM 小节）。返回 (日期, 当天条数)。"""
-        content = (content or "").strip()
-        if not content:
-            raise ValueError("内容为空")
-        date = date or self.today()
-        p = self.day_path(date)
+    def add_entry(self, content: str) -> str:
+        """新增一条记录（content 可为空 → 只有时间戳的记录）。返回 entry_id。"""
+        import datetime
         now = datetime.datetime.now()
-        entry = f"## {now.strftime('%H:%M')}\n\n{content}\n"
+        base = now.strftime("%Y-%m-%d_%H-%M-%S")
+        root = paths.journal_root(self.data_dir)
+        entry_id = base
+        i = 1
         with WRITE_LOCK:
-            if os.path.isfile(p):
-                with open(p, "r", encoding="utf-8") as f:
-                    existing = f.read()
-                text = existing.rstrip("\n") + "\n\n" + entry
-            else:
-                d = datetime.date.fromisoformat(date)
-                text = f"# {date} {WEEKDAYS[d.weekday()]}\n\n{entry}"
-            os.makedirs(os.path.dirname(p), exist_ok=True)
-            with open(p, "w", encoding="utf-8") as f:
-                f.write(text)
-            count = sum(1 for line in text.split("\n") if line.startswith("## "))
-        return date, count
+            os.makedirs(root, exist_ok=True)
+            while os.path.exists(os.path.join(root, entry_id + ".md")):
+                entry_id = f"{base}-{i}"
+                i += 1
+            with open(os.path.join(root, entry_id + ".md"), "w", encoding="utf-8") as f:
+                f.write((content or "").strip())
+        return entry_id
 
-    def save_day(self, date: str, text: str) -> None:
-        """整天编辑保存（原文直写）。"""
-        p = self.day_path(date)
+    def save_entry(self, entry_id: str, text: str) -> None:
+        p = self.entry_path(entry_id)
         with WRITE_LOCK:
-            os.makedirs(os.path.dirname(p), exist_ok=True)
+            if not os.path.isfile(p):
+                raise ValueError(f"记录不存在: {entry_id}")
             with open(p, "w", encoding="utf-8") as f:
                 f.write(text)
 
-    def delete_day(self, date: str) -> bool:
-        p = self.day_path(date)
+    def delete_entry(self, entry_id: str) -> bool:
+        p = self.entry_path(entry_id)
         if not os.path.isfile(p):
             return False
         with WRITE_LOCK:

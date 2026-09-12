@@ -193,23 +193,34 @@ table.files th, table.files td {
 }
 table.files th { background: var(--code-bg); }
 
-/* ===== 日记 ===== */
+/* ===== 随手记 ===== */
 .quick-write {
   background: var(--card); border: 1px solid var(--border); border-radius: 10px;
-  padding: 1rem; margin-bottom: 2rem;
+  padding: 1rem; margin-bottom: 1.6rem;
   box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }
 .quick-write textarea {
-  width: 100%; border: 1px solid var(--border); border-radius: 8px;
-  padding: 0.7rem; font: inherit; resize: vertical; background: var(--bg);
+  width: 100%; min-height: 160px; border: 1px solid var(--border); border-radius: 8px;
+  padding: 0.8rem; font: inherit; line-height: 1.7; resize: vertical; background: var(--bg);
 }
 .quick-write textarea:focus { border-color: var(--accent); outline: none; }
 .quick-write-actions { display: flex; justify-content: space-between; align-items: center; margin-top: 0.6rem; }
-.timeline h2 { font-size: 1.1rem; }
-.timeline-day { padding: 0.5rem 0; border-bottom: 1px dashed var(--border); }
-.day-link { display: flex; gap: 0.7rem; align-items: center; }
-.day-date { font-weight: 600; color: var(--fg); }
-.day-preview { margin-left: 0.2rem; }
+.entry-stream { margin-top: 0.4rem; }
+.entry-item { border-bottom: 1px dashed var(--border); }
+.entry-link { display: flex; gap: 0.9rem; align-items: baseline; padding: 0.55rem 0.2rem; }
+.entry-time {
+  flex: none; font-size: 0.8rem; color: var(--muted);
+  background: var(--code-bg); border-radius: 5px; padding: 0.1rem 0.45rem;
+  font-variant-numeric: tabular-nums;
+}
+.entry-time.big { font-size: 1rem; padding: 0.15rem 0.6rem; }
+.entry-preview { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.entry-link:hover .entry-preview { color: var(--accent-dark); }
+.big-editor textarea {
+  width: 100%; min-height: 420px; border: 1px solid var(--border); border-radius: 8px;
+  padding: 0.9rem; font: inherit; line-height: 1.7; resize: vertical; background: var(--bg);
+}
+.big-editor textarea:focus { border-color: var(--accent); outline: none; }
 
 /* ===== 求职 ===== */
 .job-table { width: 100%; border-collapse: collapse; background: var(--card); }
@@ -236,19 +247,28 @@ table.files th { background: var(--code-bg); }
 .nav-minor { font-size: 0.85rem; opacity: 0.75; }
 
 /* ===== 知识库首页 ===== */
-.kb-templates h2, .kb-wiki h2 { font-size: 1.15rem; }
-.template-cards { display: flex; gap: 1rem; flex-wrap: wrap; margin: 0.6rem 0 1.6rem; }
-.template-card {
-  display: block; width: 240px; padding: 0.9rem 1rem;
-  background: var(--card); border: 1px solid var(--border); border-radius: 10px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.04); color: var(--fg);
+.kb-section {
+  background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+  padding: 1.1rem 1.3rem 1.3rem; margin-bottom: 1.6rem;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }
-.template-card:hover { border-color: var(--accent); text-decoration: none; }
+.kb-templates { border-top: 3px solid var(--accent); }
+.kb-wiki { border-top: 3px solid #3b5e9e; }
+.kb-section h2 { font-size: 1.15rem; margin-top: 0; }
+.section-icon { margin-right: 0.3rem; }
+.template-cards { display: flex; gap: 1rem; flex-wrap: wrap; margin: 0.6rem 0 0.2rem; }
+.template-card {
+  display: block; width: 260px; padding: 1rem 1.1rem;
+  background: var(--bg); border: 1px solid var(--border); border-left: 4px solid var(--accent);
+  border-radius: 8px; color: var(--fg);
+}
+.template-card:hover { border-color: var(--accent); text-decoration: none; box-shadow: 0 2px 6px rgba(0,0,0,0.08); }
 .template-card:hover .template-name { color: var(--accent-dark); }
-.muted-card { opacity: 0.55; }
-.template-name { font-weight: 600; margin-bottom: 0.2rem; }
+.muted-card { border-left-color: var(--border); opacity: 0.55; }
+.template-name { font-weight: 600; font-size: 1.05rem; margin-bottom: 0.25rem; }
 .template-desc { color: var(--muted); font-size: 0.85rem; margin-bottom: 0.5rem; }
 .template-stat { display: flex; gap: 0.4rem; }
+.kb-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 0 1.4rem; }
 .kb-group h3 { font-size: 1rem; margin-bottom: 0.3rem; }
 .kb-group-more { font-size: 0.85rem; margin-left: 0.5rem; }
 

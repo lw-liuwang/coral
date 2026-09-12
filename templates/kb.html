@@ -11,13 +11,13 @@
 {% endif %}
 
 {% if ingest_active %}
-<div class="alert ok ingesting">
+<div class="alert ingesting">
   正在整理《{{ ingest_active.source }}》… {{ ingest_active.step_label or ingest_active.message }}
 </div>
 {% endif %}
 
-<section class="kb-templates">
-  <h2>跟踪模板</h2>
+<section class="kb-section kb-templates">
+  <h2><span class="section-icon">📋</span> 跟踪模板</h2>
   <div class="template-cards">
     <a class="template-card" href="/jobs">
       <div class="template-name">求职跟踪</div>
@@ -34,8 +34,8 @@
   </div>
 </section>
 
-<section class="kb-wiki">
-  <h2>整理的知识 <span class="muted">· {{ total }} 页</span></h2>
+<section class="kb-section kb-wiki">
+  <h2><span class="section-icon">📚</span> 整理的知识 <span class="muted">· {{ total }} 页</span></h2>
 
   <form class="kb-upload" action="/sources/upload" method="post" enctype="multipart/form-data">
     <input type="hidden" name="auto_ingest" value="true">
@@ -49,17 +49,19 @@
     <p>还没有整理的知识。上传笔记 / 文档（.md / .txt），后台自动整理成结构化页面。</p>
   </div>
   {% endif %}
-  {% for t, label, group, count in groups %}
-  <div class="kb-group">
-    <h3>{{ label }} <span class="muted">· {{ count }}</span>
-      <a class="muted kb-group-more" href="/pages?type={{ t }}">全部 →</a></h3>
-    <ul class="page-list">
-      {% for p in group %}
-      <li><a class="page-link" href="/pages/{{ p.slug|urlquote }}">{{ p.title }}</a>
-        {% if p.updated %}<span class="muted">{{ p.updated }}</span>{% endif %}</li>
-      {% endfor %}
-    </ul>
+  <div class="kb-groups">
+    {% for t, label, group, count in groups %}
+    <div class="kb-group">
+      <h3>{{ label }} <span class="muted">· {{ count }}</span>
+        <a class="muted kb-group-more" href="/pages?type={{ t }}">全部 →</a></h3>
+      <ul class="page-list">
+        {% for p in group %}
+        <li><a class="page-link" href="/pages/{{ p.slug|urlquote }}">{{ p.title }}</a>
+          {% if p.updated %}<span class="muted">{{ p.updated }}</span>{% endif %}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endfor %}
   </div>
-  {% endfor %}
 </section>
 {% endblock %}

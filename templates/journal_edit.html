@@ -1,13 +1,20 @@
 {% extends "base.html" %}
-{% block title %}编辑 {{ date }}{% endblock %}
+{% block title %}编辑随手记{% endblock %}
 {% block content %}
-<div class="page-head"><h1>编辑 {{ date }}</h1></div>
+<div class="page-head">
+  <h1><span class="entry-time big">{{ entry_id[:10] }} {{ entry_id[11:19] }}</span></h1>
+</div>
 
 {% if error %}<div class="alert">{{ error }}</div>{% endif %}
 
-<form class="form" action="/journal/{{ date }}/edit" method="post">
-  <textarea name="content" rows="20" spellcheck="false">{{ raw }}</textarea>
-  <button class="btn primary" type="submit">保存</button>
-  <a class="btn" href="/journal/{{ date }}">取消</a>
+<form class="form big-editor" action="/journal/{{ entry_id|urlquote }}/edit" method="post">
+  <textarea name="content" rows="16" spellcheck="false" autofocus>{{ raw }}</textarea>
+  <div class="quick-write-actions">
+    <span class="hint">Markdown 可用。</span>
+    <span>
+      <button class="btn primary" type="submit">保存</button>
+      <a class="btn" href="/journal/{{ entry_id|urlquote }}">取消</a>
+    </span>
+  </div>
 </form>
 {% endblock %}

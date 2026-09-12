@@ -36,8 +36,10 @@ def _index_job(request: Request, slug: str) -> None:
 @router.get("/jobs")
 def jobs_table(request: Request):
     active, ended = _jobs(request).sorted_jobs()
+    from app.pins import PinStore
+    pinned = PinStore(_rt(request).store.data_dir).is_pinned("jobs")
     return templates.TemplateResponse("jobs.html", {
-        "request": request, "active": active, "ended": ended,
+        "request": request, "active": active, "ended": ended, "pinned": pinned,
     })
 
 

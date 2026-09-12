@@ -3,7 +3,14 @@
 {% block content %}
 <div class="page-head">
   <h1>求职跟踪 <span class="muted">进行中 {{ active|length }} · 已结束 {{ ended|length }}</span></h1>
-  <a class="btn primary" href="/jobs/new">＋ 记一次投递</a>
+  <span class="btns">
+    <form class="inline" action="/kb/pin" method="post">
+      <input type="hidden" name="key" value="jobs">
+      <input type="hidden" name="next" value="/jobs">
+      <button class="btn" type="submit">{{ "★ 已置顶" if pinned else "☆ 置顶到知识库" }}</button>
+    </form>
+    <a class="btn primary" href="/jobs/new">＋ 记一次投递</a>
+  </span>
 </div>
 
 {% if active|length == 0 and ended|length == 0 %}

@@ -19,17 +19,27 @@
 <section class="kb-section kb-templates">
   <h2><span class="section-icon">📋</span> 跟踪模板</h2>
   <div class="template-cards">
-    <a class="template-card" href="/jobs">
-      <div class="template-name">求职跟踪</div>
-      <div class="template-desc">每次投递一行，记录进度与复盘</div>
-      <div class="template-stat">
-        <span class="tag">进行中 {{ jobs_active }}</span>
-        <span class="tag">已结束 {{ jobs_ended }}</span>
-      </div>
-    </a>
+    {% for t in template_items %}
+    <div class="template-card{% if t.pinned %} pinned{% endif %}">
+      <a class="card-body" href="{{ t.url }}">
+        <div class="template-name">{{ t.name }}{% if t.pinned %}<span class="tag pin-tag">置顶</span>{% endif %}</div>
+        <div class="template-desc">{{ t.desc }}</div>
+        <div class="template-stat">
+          {% for label, n in t.stats %}<span class="tag">{{ label }} {{ n }}</span>{% endfor %}
+        </div>
+      </a>
+      <form class="inline pin-form" action="/kb/pin" method="post">
+        <input type="hidden" name="key" value="{{ t.key }}">
+        <input type="hidden" name="next" value="/kb">
+        <button class="btn small" type="submit">{{ "★ 取消置顶" if t.pinned else "☆ 置顶" }}</button>
+      </form>
+    </div>
+    {% endfor %}
     <div class="template-card muted-card">
-      <div class="template-name">更多模板…</div>
-      <div class="template-desc">读书、项目、健身等（规划中）</div>
+      <div class="card-body">
+        <div class="template-name">更多模板…</div>
+        <div class="template-desc">读书、项目、健身等（规划中）</div>
+      </div>
     </div>
   </div>
 </section>

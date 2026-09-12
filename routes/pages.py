@@ -38,13 +38,27 @@ def _after_write(request: Request, slug: str) -> None:
             rt.search.remove_page(slug)
 
 
+# 跟踪模板注册表（更多模板在此追加；key 用于置顶持久化）
+KB_TEMPLATES = [
+    {"key": "jobs", "name": "求职跟踪", "desc": "每次投递一行，记录进度与复盘",
+     "url": "/jobs"},
+]
+
+
 @router.get("/kb")
 def kb_home(request: Request, upload: int = 0, rejected: int = 0):
-    """知识库首页：模板区（求职跟踪等）+ 导入文档 + 整理的知识（wiki 分组摘要）。"""
+    """知识库首页：模板区（置顶在前）+ 导入文档 + 整理的知识（wiki 分组摘要）。"""
     rt = _rt(request)
     from app.jobs import JobsStore
+    from app.pins import PinStore
     active, ended = JobsStore(rt.store.data_dir).sorted_jobs()
     pages = rt.store.list_pages()
+    pinned = set(PinStore(rt.store.data_dir).pinned())
+    items = []
+    for t in KB_TEMPLATES:
+        stats = [("进行中", len(active)), ("已结束", len(ended))] if t["key"] == "jobs" else []
+        items.append(dict(t, pinned=t["key"] in pinned, stats=stats))
+    items.sort(key=lambda t: not t["pinned"])  # 置顶的排前面，组内保序
     groups = []
     for t in index_log.TYPE_ORDER:
         group = [p for p in pages if p.type == t]
@@ -53,9 +67,25 @@ def kb_home(request: Request, upload: int = 0, rejected: int = 0):
     ingest_active = rt.ingest.status()["active"] if rt.ingest else None
     return templates.TemplateResponse("kb.html", {
         "request": request, "groups": groups, "total": len(pages),
+        "template_items": items,
         "jobs_active": len(active), "jobs_ended": len(ended),
         "upload": upload, "rejected": rejected, "ingest_active": ingest_active,
     })
+
+
+@router.post("/kb/pin")
+def kb_pin(request: Request, key: str = Form(...), next: str = Form("/kb")):
+    """切换模板置顶；next 指定跳回的页面（模板自身页或知识库）。"""
+    from app.pins import PinStore
+    rt = _rt(request)
+    if not any(t["key"] == key for t in KB_TEMPLATES):
+        return templates.TemplateResponse("error.html", {
+            "request": request, "message": f"未知模板: {key}"}, status_code=404)
+    PinStore(rt.store.data_dir).toggle(key)
+    # 只允许站内相对跳转
+    if not next.startswith("/") or next.startswith("//"):
+        next = "/kb"
+    return RedirectResponse(next, status_code=302)
 
 
 @router.get("/pages")

@@ -276,12 +276,18 @@ table.files th { background: var(--code-bg); }
 .section-icon { margin-right: 0.3rem; }
 .template-cards { display: flex; gap: 1rem; flex-wrap: wrap; margin: 0.6rem 0 0.2rem; }
 .template-card {
-  display: block; width: 260px; padding: 1rem 1.1rem;
+  width: 260px; padding: 0;
   background: var(--bg); border: 1px solid var(--border); border-left: 4px solid var(--accent);
   border-radius: 8px; color: var(--fg);
 }
+.template-card .card-body { display: block; padding: 1rem 1.1rem 0.6rem; color: var(--fg); }
 .template-card:hover { border-color: var(--accent); text-decoration: none; box-shadow: 0 2px 6px rgba(0,0,0,0.08); }
 .template-card:hover .template-name { color: var(--accent-dark); }
+.template-card .pin-form { padding: 0 1.1rem 0.9rem; }
+.template-card.pinned {
+  border-left-color: #d9982f; background: #fffdf7;
+}
+.pin-tag { background: #fdf0e0; color: #9a5b00; margin-left: 0.4rem; }
 .muted-card { border-left-color: var(--border); opacity: 0.55; }
 .template-name { font-weight: 600; font-size: 1.05rem; margin-bottom: 0.25rem; }
 .template-desc { color: var(--muted); font-size: 0.85rem; margin-bottom: 0.5rem; }

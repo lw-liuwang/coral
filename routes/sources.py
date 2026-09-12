@@ -37,7 +37,8 @@ def sources_list(request: Request):
 
 @router.post("/sources/upload")
 async def sources_upload(request: Request, files: List[UploadFile] = File(...),
-                         auto_ingest: bool = Form(False)):
+                         auto_ingest: bool = Form(True)):
+    """上传即整理：保存 → 自动入队 LLM 整理 → 回知识库页看进度。"""
     rt = _rt(request)
     saved: List[str] = []
     rejected: List[str] = []
@@ -53,20 +54,17 @@ async def sources_upload(request: Request, files: List[UploadFile] = File(...),
         saved.append(os.path.basename(target))
     if rt.ingest is None:
         return templates.TemplateResponse("error.html", {
-            "request": request, "message": "ingest 服务尚未启动"}, status_code=503)
-    queued = []
-    if auto_ingest:
-        for name in saved:
-            if rt.ingest.enqueue(name):
-                queued.append(name)
+            "request": request, "message": "整理服务尚未启动"}, status_code=503)
+    for name in saved:
+        rt.ingest.enqueue(name)
     if saved and rt.search:
         for name in saved:
             with open(paths.find_source_file(rt.config.data_dir, name), "r", encoding="utf-8") as fh:
                 content = fh.read()
             rt.search.index_page(name, "source", name, content)
-    return templates.TemplateResponse("upload_result.html", {
-        "request": request, "saved": saved, "rejected": rejected, "queued": queued,
-    })
+    return RedirectResponse(
+        f"/kb?upload={len(saved)}" + (f"&rejected={len(rejected)}" if rejected else ""),
+        status_code=302)
 
 
 def _decode(data: bytes) -> str:

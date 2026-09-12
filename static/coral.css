@@ -251,3 +251,13 @@ table.files th { background: var(--code-bg); }
 .template-stat { display: flex; gap: 0.4rem; }
 .kb-group h3 { font-size: 1rem; margin-bottom: 0.3rem; }
 .kb-group-more { font-size: 0.85rem; margin-left: 0.5rem; }
+
+/* 知识库导入框 */
+.kb-upload {
+  display: flex; gap: 0.7rem; align-items: center; flex-wrap: wrap;
+  background: var(--card); border: 1px dashed var(--border); border-radius: 8px;
+  padding: 0.6rem 0.9rem; margin: 0.6rem 0 1.2rem;
+}
+.kb-src-link { font-size: 0.85rem; }
+.alert.ok { background: #e5f2e8; color: #2c7a3f; border-color: #bfe0c8; }
+.ingesting { background: #fdf0e0; color: #9a5b00; border-color: #eed9b8; }

@@ -1,7 +1,20 @@
 {% extends "base.html" %}
 {% block title %}知识库{% endblock %}
+{% if ingest_active %}{% block head_extra %}<meta http-equiv="refresh" content="3">{% endblock %}{% endif %}
 {% block content %}
 <div class="page-head"><h1>知识库</h1></div>
+
+{% if upload %}
+<div class="alert ok">已导入 {{ upload }} 个文档，正在后台整理，稍后自动出现在下方。{% if rejected %}（{{ rejected }} 个文件格式不支持，仅支持 .md / .txt）{% endif %}</div>
+{% elif rejected %}
+<div class="alert">{{ rejected }} 个文件格式不支持，仅支持 .md / .txt。</div>
+{% endif %}
+
+{% if ingest_active %}
+<div class="alert ok ingesting">
+  正在整理《{{ ingest_active.source }}》… {{ ingest_active.step_label or ingest_active.message }}
+</div>
+{% endif %}
 
 <section class="kb-templates">
   <h2>跟踪模板</h2>
@@ -22,10 +35,18 @@
 </section>
 
 <section class="kb-wiki">
-  <h2>整理的知识 <span class="muted">· {{ total }} 页 · 由导入文档自动整理</span></h2>
+  <h2>整理的知识 <span class="muted">· {{ total }} 页</span></h2>
+
+  <form class="kb-upload" action="/sources/upload" method="post" enctype="multipart/form-data">
+    <input type="hidden" name="auto_ingest" value="true">
+    <input type="file" name="files" multiple accept=".md,.markdown,.txt" required>
+    <button class="btn primary" type="submit">导入文档，自动整理</button>
+    <a class="muted kb-src-link" href="/sources">管理原始资料 →</a>
+  </form>
+
   {% if total == 0 %}
   <div class="empty">
-    <p>还没有整理的知识。去 <a href="/sources">资料</a> 上传第一份笔记，勾选「自动导入」。</p>
+    <p>还没有整理的知识。上传笔记 / 文档（.md / .txt），后台自动整理成结构化页面。</p>
   </div>
   {% endif %}
   {% for t, label, group, count in groups %}

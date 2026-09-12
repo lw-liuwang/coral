@@ -14,9 +14,6 @@
   <nav>
     <a href="/">随手记</a>
     <a href="/kb">知识库</a>
-    <a href="/sources" class="nav-minor">资料</a>
-    <a href="/ingest" class="nav-minor">整理</a>
-    <a href="/lint" class="nav-minor">体检</a>
   </nav>
   <form class="searchbox" action="/search" method="get">
     <input type="search" name="q" placeholder="搜索…" value="{{ request.query_params.get('q', '') }}">

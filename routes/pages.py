@@ -39,8 +39,8 @@ def _after_write(request: Request, slug: str) -> None:
 
 
 @router.get("/kb")
-def kb_home(request: Request):
-    """知识库首页：模板区（求职跟踪等）+ 整理的知识（wiki 分组摘要）。"""
+def kb_home(request: Request, upload: int = 0, rejected: int = 0):
+    """知识库首页：模板区（求职跟踪等）+ 导入文档 + 整理的知识（wiki 分组摘要）。"""
     rt = _rt(request)
     from app.jobs import JobsStore
     active, ended = JobsStore(rt.store.data_dir).sorted_jobs()
@@ -50,9 +50,11 @@ def kb_home(request: Request):
         group = [p for p in pages if p.type == t]
         if group:
             groups.append((t, index_log.TYPE_LABELS[t], group[:5], len(group)))
+    ingest_active = rt.ingest.status()["active"] if rt.ingest else None
     return templates.TemplateResponse("kb.html", {
         "request": request, "groups": groups, "total": len(pages),
         "jobs_active": len(active), "jobs_ended": len(ended),
+        "upload": upload, "rejected": rejected, "ingest_active": ingest_active,
     })
 
 

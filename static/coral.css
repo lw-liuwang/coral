@@ -219,6 +219,16 @@ table.files th { background: var(--code-bg); }
 .entry-time.big { font-size: 1rem; padding: 0.15rem 0.6rem; }
 .entry-preview { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .entry-link:hover .entry-preview { color: var(--accent-dark); }
+.entry-name {
+  flex: none; max-width: 30%; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rename-form { display: flex; gap: 0.5rem; margin-bottom: 1.2rem; }
+.rename-form input {
+  width: 280px; padding: 0.3rem 0.6rem;
+  border: 1px solid var(--border); border-radius: 6px; font-size: 0.9rem;
+}
+.rename-form input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .big-editor textarea {
   width: 100%;
   height: calc(100vh - 200px);   /* 编辑页同样占满首屏 */

@@ -1,8 +1,9 @@
 {% extends "base.html" %}
-{% block title %}随手记 {{ date }}{% endblock %}
+{% block title %}{{ name or ('随手记 ' + date) }}{% endblock %}
 {% block content %}
 <div class="page-head">
-  <h1><span class="entry-time big">{{ date }} {{ time }}</span></h1>
+  <h1><span class="entry-time big">{{ date }} {{ time }}</span>
+    {% if name %}<span class="entry-name">{{ name }}</span>{% endif %}</h1>
   <span class="btns">
     <a class="btn" href="/journal/{{ entry_id|urlquote }}/edit">编辑</a>
     <form class="inline" action="/journal/{{ entry_id|urlquote }}/delete" method="post"
@@ -12,6 +13,16 @@
     <a class="btn" href="/">← 返回</a>
   </span>
 </div>
+
+<form class="rename-form" action="/journal/{{ entry_id|urlquote }}/rename" method="post">
+  <input type="text" name="name" value="{{ name or '' }}" maxlength="100"
+         placeholder="给这条记录起个名字（中文/字母/数字、- _）">
+  <button class="btn small" type="submit">改名</button>
+</form>
+
+{% if rename_error %}
+<div class="alert">{{ rename_error }}</div>
+{% endif %}
 
 {% if empty %}
 <div class="empty"><p>这条只记了个时刻，没有内容。</p></div>

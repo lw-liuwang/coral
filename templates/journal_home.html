@@ -17,6 +17,7 @@
   <div class="entry-item">
     <a class="entry-link" href="/journal/{{ e.entry_id|urlquote }}">
       <span class="entry-time">{{ e.date }} {{ e.time }}</span>
+      {% if e.name %}<span class="entry-name">{{ e.name }}</span>{% endif %}
       <span class="entry-preview">{{ e.preview if e.preview else "（空白，仅时间戳）" }}</span>
     </a>
   </div>

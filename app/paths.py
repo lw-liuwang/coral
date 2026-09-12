@@ -2,8 +2,11 @@
 import os
 from typing import List
 
-WIKI_DIRS = {"entity": "entities", "concept": "concepts", "source": "sources"}
-PAGE_TYPES = ("entity", "concept", "source")
+WIKI_DIRS = {"entity": "entities", "concept": "concepts", "source": "sources",
+             "note": "notes"}
+PAGE_TYPES = ("entity", "concept", "source", "note")
+# LLM ingest 只允许提议这三种；note 纯人工创建（随手记，不想分类时用）
+INGEST_TYPES = ("entity", "concept", "source")
 
 
 def init_data_dirs(data_dir: str) -> None:

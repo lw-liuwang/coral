@@ -65,6 +65,9 @@ main { max-width: 960px; margin: 0 auto; padding: 1.6rem 1.4rem 4rem; }
 .btn.danger { color: #b3534a; }
 .btn.danger:hover { border-color: #b3534a; background: #fdf3f2; }
 form.inline { display: inline; }
+.btn.small { padding: 0.1rem 0.5rem; font-size: 0.78rem; }
+.retype-btns { margin-left: 0.5rem; font-size: 0.8rem; color: var(--muted, #888); }
+.hint { display: block; margin-top: 0.25rem; font-size: 0.8rem; color: var(--muted, #888); }
 
 /* 列表 */
 .type-group { margin-bottom: 1.6rem; }

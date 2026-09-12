@@ -27,6 +27,6 @@ def run_lint(store: WikiStore) -> Dict[str, List]:
             else:
                 broken.append((m.slug, target))
 
-    orphans = [p for p in pages if not inbound.get(p.slug)]
-    no_outlinks = [m.slug for m in pages if not outbound.get(m.slug)]
+    orphans = [p for p in pages if p.type != "note" and not inbound.get(p.slug)]
+    no_outlinks = [m.slug for m in pages if m.type != "note" and not outbound.get(m.slug)]
     return {"broken": broken, "orphans": orphans, "no_outlinks": no_outlinks}

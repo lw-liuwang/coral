@@ -61,7 +61,7 @@ def page_list(request: Request, type: Optional[str] = None):
 
 
 @router.get("/pages/new")
-def page_new_form(request: Request, title: str = "", type: str = "concept"):
+def page_new_form(request: Request, title: str = "", type: str = "note"):
     return templates.TemplateResponse("page_new.html", {
         "request": request, "title": title, "type": type, "error": None,
     })
@@ -76,7 +76,7 @@ def page_new_create(request: Request, title: str = Form(...), type: str = Form(.
         return templates.TemplateResponse("page_new.html", {
             "request": request, "title": "", "type": type, "error": "标题不能为空"}, status_code=400)
     if type not in paths.PAGE_TYPES:
-        type = "concept"
+        type = "note"
     slug = rt.store.unique_slug(title)
     today = _today()
     body = content
@@ -180,6 +180,29 @@ def page_edit_save(request: Request, slug: str, content: str = Form(...)):
             "request": request, "slug": slug, "raw": content,
             "error": f"保存失败：{e}"}, status_code=400)
     index_log.append_log(rt.store, "edit", str(new_fm.get("title") or slug))
+    _after_write(request, slug)
+    return RedirectResponse(f"/pages/{quote(slug)}", status_code=302)
+
+
+@router.post("/pages/{slug}/retype")
+def page_retype(request: Request, slug: str, new_type: str = Form(...)):
+    """转换页面类型（随手记 → 概念/实体等）：移动文件 + 更新 frontmatter。"""
+    rt = _rt(request)
+    slug = unquote(slug)
+    if new_type not in paths.PAGE_TYPES:
+        return templates.TemplateResponse("error.html", {
+            "request": request, "message": f"未知类型: {new_type}"}, status_code=400)
+    page = rt.store.get_page(slug)
+    if page is None:
+        return templates.TemplateResponse("error.html", {
+            "request": request, "message": f"页面不存在: {slug}"}, status_code=404)
+    old_type, fm, _ = page
+    if old_type == new_type:
+        return RedirectResponse(f"/pages/{quote(slug)}", status_code=302)
+    rt.store.move_page(slug, new_type)
+    index_log.append_log(rt.store, "retype",
+                         str(fm.get("title") or slug),
+                         [f"{old_type} → {new_type}"])
     _after_write(request, slug)
     return RedirectResponse(f"/pages/{quote(slug)}", status_code=302)
 

@@ -21,6 +21,7 @@ from .wiki import WikiStore, WRITE_LOCK
 
 STATES = ("queued", "analyzing", "generating", "writing", "done", "error")
 STEP_LABELS = {"analyzing": "正在分析", "generating": "正在生成", "writing": "正在落盘"}
+INGEST_TYPES_ALLOWED = {"entity", "concept", "source"}  # LLM 只能写这三种目录
 
 
 class IngestManager:
@@ -165,6 +166,8 @@ class IngestManager:
         dir_type = {v: k for k, v in paths.WIKI_DIRS.items()}.get(sub)
         if dir_type is None:
             return None, None, f"未知目录，已跳过: {block.path}"
+        if dir_type not in INGEST_TYPES_ALLOWED:
+            return None, None, f"目录 {sub}/ 不对 LLM 开放，已跳过: {block.path}"
         slug = filename[:-3]
         if not paths.is_safe_slug(slug):
             return None, None, f"非法 slug，已跳过: {slug!r}"

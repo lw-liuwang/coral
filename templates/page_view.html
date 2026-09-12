@@ -20,7 +20,19 @@
 <details class="meta" {% if not fm %}open{% endif %}>
   <summary>页面信息</summary>
   <dl>
-    <dt>类型</dt><dd><span class="tag">{{ TYPE_LABELS.get(type, type) }} / {{ type }}</span></dd>
+    <dt>类型</dt><dd><span class="tag">{{ TYPE_LABELS.get(type, type) }} / {{ type }}</span>
+      {% if type == "note" %}
+      <span class="btns retype-btns">
+        转为：
+        {% for t, label in [("concept", "概念"), ("entity", "实体")] %}
+        <form class="inline" action="/pages/{{ slug|urlquote }}/retype" method="post">
+          <input type="hidden" name="new_type" value="{{ t }}">
+          <button class="btn small" type="submit">{{ label }}</button>
+        </form>
+        {% endfor %}
+      </span>
+      {% endif %}
+    </dd>
     {% if fm.get("created") %}<dt>创建</dt><dd>{{ fm.created }}</dd>{% endif %}
     {% if fm.get("updated") %}<dt>更新</dt><dd>{{ fm.updated }}</dd>{% endif %}
     {% if fm.get("tags") %}

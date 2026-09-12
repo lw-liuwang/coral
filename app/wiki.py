@@ -110,6 +110,24 @@ class WikiStore:
             os.remove(p)
         return True
 
+    def move_page(self, slug: str, new_type: str) -> bool:
+        """改变页面类型：改 frontmatter 并移动到新目录。slug 不变。"""
+        if new_type not in paths.WIKI_DIRS:
+            raise ValueError(f"非法页面类型: {new_type!r}")
+        page = self.get_page(slug)
+        if page is None:
+            return False
+        old_type, fm, body = page
+        if old_type == new_type:
+            return True
+        fm["type"] = new_type
+        with WRITE_LOCK:
+            new_path = self.save_page(slug, fm, body)
+            old_file = paths.page_path(self.data_dir, old_type, slug)
+            if os.path.isfile(old_file) and os.path.abspath(old_file) != os.path.abspath(new_path):
+                os.remove(old_file)
+        return True
+
     def unique_slug(self, title: str) -> str:
         return slug_mod.unique_slug(slug_mod.make_slug(title), set(self.all_slugs()))
 

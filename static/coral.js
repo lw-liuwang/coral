@@ -41,6 +41,17 @@
     });
   }
 
+  // 首页写作框：Ctrl/Cmd+Enter 直接保存
+  var write = document.getElementById("write-area");
+  if (write) {
+    write.addEventListener("keydown", function (e) {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+        e.preventDefault();
+        write.form.submit();
+      }
+    });
+  }
+
   // 删除确认
   window.confirmDelete = function (name) {
     return window.confirm("确定删除 " + name + " ？此操作不可恢复。");

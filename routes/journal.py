@@ -32,19 +32,24 @@ def _after_write(request: Request, entry_id: str) -> None:
 
 @router.get("/")
 def journal_home(request: Request):
-    store = _journal(request)
-    entries = store.list_entries(limit=50)
-    return templates.TemplateResponse("journal_home.html", {
+    """点「随手记」直接进入整页编辑器。"""
+    return templates.TemplateResponse("journal_home.html", {"request": request})
+
+
+@router.get("/journal")
+def journal_list(request: Request):
+    entries = _journal(request).list_entries(limit=200)
+    return templates.TemplateResponse("journal_list.html", {
         "request": request, "entries": entries,
     })
 
 
 @router.post("/journal/write")
 def journal_write(request: Request, content: str = Form("")):
-    """空内容也保存（落一条只有时间戳的记录）。"""
+    """空内容也保存（落一条只有时间戳的记录）。保存后跳到这条记录。"""
     entry_id = _journal(request).add_entry(content)
     _after_write(request, entry_id)
-    return RedirectResponse("/", status_code=302)
+    return RedirectResponse(f"/journal/{quote(entry_id)}", status_code=302)
 
 
 @router.get("/journal/{entry_id}")
@@ -76,13 +81,16 @@ def journal_edit_form(request: Request, entry_id: str):
     entry_id = unquote(entry_id)
     try:
         text = store.get_entry(entry_id)
-    except ValueError:
+        date, tm = store.entry_datetime(entry_id)
+    except (ValueError, OSError):
         text = None
     if text is None:
         return templates.TemplateResponse("error.html", {
             "request": request, "message": f"记录不存在: {entry_id}"}, status_code=404)
     return templates.TemplateResponse("journal_edit.html", {
-        "request": request, "entry_id": entry_id, "raw": text, "error": None,
+        "request": request, "entry_id": entry_id,
+        "name": store.entry_name(entry_id), "date": date, "time": tm,
+        "raw": text, "error": None,
     })
 
 

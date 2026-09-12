@@ -1,26 +1,15 @@
 {% extends "base.html" %}
 {% block title %}随手记{% endblock %}
 {% block content %}
-<form class="quick-write" action="/journal/write" method="post">
-  <textarea name="content" rows="8" placeholder="想写点什么就写什么…&#10;时间会自动记下，一条就是一条" autofocus></textarea>
+<form class="big-editor write-page" action="/journal/write" method="post">
+  <textarea name="content" id="write-area" spellcheck="false" autofocus
+            placeholder="想写点什么就写什么…&#10;时间会自动记下，一条就是一条"></textarea>
   <div class="quick-write-actions">
-    <span class="hint">哪怕只点一下「写下来」，也会记下这个时刻。</span>
-    <button class="btn primary" type="submit">写下来</button>
+    <span class="hint">Ctrl+Enter 也能保存；哪怕空白，也会记下这个时刻。</span>
+    <span>
+      <a class="btn" href="/journal">过去的记录 →</a>
+      <button class="btn primary" type="submit">保存</button>
+    </span>
   </div>
 </form>
-
-<section class="entry-stream">
-  {% if entries|length == 0 %}
-  <div class="empty"><p>还没有内容。上面写下第一条吧。</p></div>
-  {% endif %}
-  {% for e in entries %}
-  <div class="entry-item">
-    <a class="entry-link" href="/journal/{{ e.entry_id|urlquote }}">
-      <span class="entry-time">{{ e.date }} {{ e.time }}</span>
-      {% if e.name %}<span class="entry-name">{{ e.name }}</span>{% endif %}
-      <span class="entry-preview">{{ e.preview if e.preview else "（空白，仅时间戳）" }}</span>
-    </a>
-  </div>
-  {% endfor %}
-</section>
 {% endblock %}

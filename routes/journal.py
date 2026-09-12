@@ -1,9 +1,11 @@
-"""随手记路由：首页大写作框 + 记录流；按条查看/编辑/改名/删除。"""
+"""随手记路由：首页大写作框 + 记录流；按条查看/编辑/改名/删除；AI 整理。"""
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import RedirectResponse
 from urllib.parse import quote, unquote
 
 from app import runtime
+from app.gitrepo import USER_AUTHOR
+from app.ingest import JOURNAL_SOURCE
 from app.journal import JournalStore, entry_title
 from app.render import render_markdown
 from app.views import templates
@@ -17,6 +19,13 @@ def _rt(request: Request):
 
 def _journal(request: Request) -> JournalStore:
     return JournalStore(_rt(request).store.data_dir)
+
+
+def _git(request: Request, paths, message: str) -> None:
+    """用户写操作留痕（git 不可用时 no-op）。"""
+    git = _rt(request).git
+    if git:
+        git.commit(paths, USER_AUTHOR, message)
 
 
 def _after_write(request: Request, entry_id: str) -> None:
@@ -49,7 +58,21 @@ def journal_write(request: Request, content: str = Form("")):
     """空内容也保存（落一条只有时间戳的记录）。保存后跳到这条记录。"""
     entry_id = _journal(request).add_entry(content)
     _after_write(request, entry_id)
+    _git(request, [f"journal/{entry_id}.md"], "随手记：新增一条")
     return RedirectResponse(f"/journal/{quote(entry_id)}", status_code=302)
+
+
+@router.post("/journal/ingest")
+def journal_ingest(request: Request):
+    """把全部随手记交给 LLM 整理（聚合 notes 页 + 可修订原文），进度在知识库页。"""
+    rt = _rt(request)
+    if rt.ingest is None:
+        return templates.TemplateResponse("error.html", {
+            "request": request, "message": "ingest 管线未启动"}, status_code=500)
+    if not _journal(request).list_entries(limit=1):
+        return RedirectResponse("/journal", status_code=302)  # 还没有内容
+    rt.ingest.enqueue(JOURNAL_SOURCE)
+    return RedirectResponse("/kb", status_code=302)
 
 
 @router.get("/journal/{entry_id}")
@@ -105,6 +128,7 @@ def journal_edit_save(request: Request, entry_id: str, content: str = Form("")):
         return templates.TemplateResponse("error.html", {
             "request": request, "message": str(e)}, status_code=404)
     _after_write(request, entry_id)
+    _git(request, [f"journal/{entry_id}.md"], "随手记：编辑内容")
     return RedirectResponse(f"/journal/{quote(entry_id)}", status_code=302)
 
 
@@ -125,6 +149,8 @@ def journal_rename(request: Request, entry_id: str, name: str = Form("")):
     if rt.search:
         rt.search.remove_page(entry_id, "journal")
     _after_write(request, new_id)
+    _git(request, [f"journal/{entry_id}.md", f"journal/{new_id}.md"],
+          f"随手记：改名 {entry_id} → {new_id}")
     return RedirectResponse(f"/journal/{quote(new_id)}", status_code=302)
 
 
@@ -136,4 +162,5 @@ def journal_delete(request: Request, entry_id: str):
         rt = _rt(request)
         if rt.search:
             rt.search.remove_page(entry_id)
+        _git(request, [f"journal/{entry_id}.md"], f"随手记：删除 {entry_id}")
     return RedirectResponse("/", status_code=302)

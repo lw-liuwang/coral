@@ -156,6 +156,23 @@ class JournalStore:
             os.rename(old_p, new_p)  # mtime 保持
         return new_name
 
+    def source_text(self, max_chars: int = 24000) -> str:
+        """把全部随手记拼成给 LLM 的源文本（时间正序；超长截断）。"""
+        parts: List[str] = []
+        total = 0
+        for e in reversed(self.list_entries(limit=100000)):  # 时间正序
+            text = self.get_entry(e.entry_id) or ""
+            if not text.strip():
+                continue
+            head = f"## {e.date} {e.time}" + (f"（{e.name}）" if e.name else "")
+            block = f"{head}\n\n{text.strip()}"
+            if total + len(block) > max_chars:
+                parts.append("（更早的记录已截断）")
+                break
+            total += len(block)
+            parts.append(block)
+        return "\n\n".join(parts)
+
     def delete_entry(self, entry_id: str) -> bool:
         p = self.entry_path(entry_id)
         if not os.path.isfile(p):

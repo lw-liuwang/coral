@@ -4,6 +4,9 @@
 <div class="page-head">
   <h1>过去的记录 <span class="muted">· {{ entries|length }} 条</span></h1>
   <span class="btns">
+    <form class="inline" action="/journal/ingest" method="post">
+      <button class="btn" type="submit" title="交给 LLM 按主题聚合成笔记页；可修订明显笔误（git 留痕）">✨ AI 整理成笔记</button>
+    </form>
     <a class="btn primary" href="/">写一条</a>
   </span>
 </div>

@@ -8,6 +8,7 @@ from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import RedirectResponse
 
 from app import paths, runtime
+from app.gitrepo import USER_AUTHOR
 from app.render import render_markdown
 from app.views import templates
 
@@ -55,6 +56,9 @@ async def sources_upload(request: Request, files: List[UploadFile] = File(...),
     if rt.ingest is None:
         return templates.TemplateResponse("error.html", {
             "request": request, "message": "整理服务尚未启动"}, status_code=503)
+    if saved and rt.git:
+        rt.git.commit([f"sources/{n}" for n in saved], USER_AUTHOR,
+                      f"资料：上传 {', '.join(saved)}")
     for name in saved:
         rt.ingest.enqueue(name)
     if saved and rt.search:
@@ -113,4 +117,6 @@ def source_delete(request: Request, name: str):
         os.remove(path)
         if rt.search:
             rt.search.remove_page(name, "source")
+        if rt.git:
+            rt.git.commit([f"sources/{name}"], USER_AUTHOR, f"资料：删除 {name}")
     return RedirectResponse("/sources", status_code=302)

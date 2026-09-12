@@ -44,9 +44,10 @@ def create_app(config: Config = None) -> FastAPI:
     def _startup() -> None:
         from .ingest import IngestManager
         from .search import SearchIndex
+        rt.git.ensure()  # data/ 自成 git 仓库（不可用时留痕功能降级为 no-op）
         rt.search = SearchIndex(config)
         rt.search.reconcile(rt.store)
-        rt.ingest = IngestManager(config, rt.store, search=rt.search)
+        rt.ingest = IngestManager(config, rt.store, search=rt.search, git=rt.git)
         rt.ingest.start()
 
     return app

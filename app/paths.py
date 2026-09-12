@@ -61,14 +61,17 @@ def is_safe_slug(slug: str) -> bool:
     return all(c.isalnum() or c in "-_" for c in slug)
 
 
-def is_safe_ingest_path(path: str) -> bool:
-    """LLM 输出的 FILE 块路径闸门：必须 wiki/ 下、无 .. 段、非绝对路径、无控制字符。"""
+def is_safe_ingest_path(path: str, allowed_roots: tuple = ("wiki",)) -> bool:
+    """LLM 输出的 FILE 块路径闸门：必须在允许的根目录下、无 .. 段、非绝对路径、无控制字符。
+
+    默认只开放 wiki/；随手记整理任务额外开放 journal/（只能改已存在条目）。
+    """
     if not path:
         return False
     if any(ord(c) < 32 for c in path):
         return False
     p = path.replace("\\", "/").strip("/")
-    if not p.startswith("wiki/"):
+    if not any(p.startswith(r + "/") for r in allowed_roots):
         return False
     parts = p.split("/")
     for part in parts:

@@ -5,6 +5,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import RedirectResponse
 
 from app import runtime
+from app.gitrepo import USER_AUTHOR
 from app.jobs import ALL_STATUS, STATUS_FLOW, JobsStore
 from app.render import render_markdown
 from app.views import templates
@@ -14,6 +15,12 @@ router = APIRouter()
 
 def _rt(request: Request):
     return request.app.state.runtime
+
+
+def _git(request: Request, paths, message: str) -> None:
+    git = _rt(request).git
+    if git:
+        git.commit(paths, USER_AUTHOR, message)
 
 
 def _jobs(request: Request) -> JobsStore:
@@ -64,6 +71,7 @@ def job_new_create(request: Request, company: str = Form(...),
             "request": request, "error": str(e),
             "today": applied, "statuses": ALL_STATUS}, status_code=400)
     _index_job(request, slug)
+    _git(request, [f"jobs/{slug}.md"], f"求职：新增投递 {company}")
     return RedirectResponse(f"/jobs/{quote(slug)}", status_code=302)
 
 
@@ -102,6 +110,7 @@ def job_advance(request: Request, slug: str, status: str = Form(...),
         return templates.TemplateResponse("error.html", {
             "request": request, "message": f"投递记录不存在: {slug}"}, status_code=404)
     _index_job(request, slug)
+    _git(request, [f"jobs/{slug}.md"], f"求职：推进状态 {slug} → {status}")
     return RedirectResponse(f"/jobs/{quote(slug)}", status_code=302)
 
 
@@ -119,6 +128,7 @@ def job_retro(request: Request, slug: str, content: str = Form("")):
         return templates.TemplateResponse("error.html", {
             "request": request, "message": f"投递记录不存在: {slug}"}, status_code=404)
     _index_job(request, slug)
+    _git(request, [f"jobs/{slug}.md"], f"求职：追加复盘 {slug}")
     return RedirectResponse(f"/jobs/{quote(slug)}", status_code=302)
 
 
@@ -129,4 +139,5 @@ def job_delete(request: Request, slug: str):
         rt = _rt(request)
         if rt.search:
             rt.search.remove_page(slug)
+        _git(request, [f"jobs/{slug}.md"], f"求职：删除投递 {slug}")
     return RedirectResponse("/jobs", status_code=302)

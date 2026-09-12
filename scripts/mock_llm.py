@@ -2,9 +2,14 @@
 """coral 的 mock LLM 服务器：无真实端点时的端到端联调用。
 
 实现 POST /v1/chat/completions：
-- system 含「知识库分析师」→ 返回固定中文分析文本（Step 1）
-- system 含「wiki 维护者」→ 返回手工构造的 FILE 块（Step 2），
-  故意混入一个恶意路径块（wiki/../evil.md）验证安全闸门
+- 消息里含「随手记」→ 随手记整理模式：
+  - system 含「知识库分析师」→ 固定分析文本（Step 1）
+  - system 含「wiki 维护者」→ notes 页块 + journal 原文修订块
+    （故意混入一个不存在的条目，验证「只能修订已存在条目」闸门）
+- 否则常规文档模式：
+  - system 含「知识库分析师」→ 返回固定中文分析文本（Step 1）
+  - system 含「wiki 维护者」→ 返回手工构造的 FILE 块（Step 2），
+    故意混入一个恶意路径块（wiki/../evil.md）验证安全闸门
 
 用法：python scripts/mock_llm.py [端口]
 然后把 config.yaml 的 llm.base_url 指向 http://127.0.0.1:8400/v1
@@ -101,18 +106,59 @@ title: 恶意页面
 
 ---END FILE---"""
 
+JOURNAL_ANALYSIS = """## 关键实体
+- Coral 交互设计：核心，用户正在打磨的产品方向，新
+
+## 关键概念
+- 跑步锻炼：从时间线记录中归纳的生活主题，新
+
+## 与现有 wiki 的关联
+- wiki 目前为空，本源是第一个来源。
+
+## 建议
+- 新建 note 页：跑步（聚合锻炼相关记录）
+- 修订一条笔误记录"""
+
+JOURNAL_GENERATION = """---FILE: wiki/notes/跑步.md---
+---
+type: note
+title: 跑步
+created: 2026-01-01
+updated: 2026-01-01
+tags: [锻炼]
+related: []
+sources: ["随手记"]
+---
+
+# 跑步
+
+从随手记聚合的锻炼主题：晚上跑了三公里（改）。
+
+---END FILE---
+
+---FILE: journal/夜跑-记录.md---
+晚上跑了三公里（AI 整理：保持原意）
+---END FILE---
+
+---FILE: journal/不存在的条目.md---
+这个块应当被「只能修订已存在条目」闸门拒绝。
+---END FILE---"""
+
 
 @app.post("/v1/chat/completions")
 async def chat(request: Request):
     payload = await request.json()
     system = ""
+    has_journal = False
     for msg in payload.get("messages", []):
         if msg.get("role") == "system":
             system = msg.get("content", "")
+        if "随手记" in msg.get("content", ""):
+            has_journal = True
     if "知识库分析师" in system:
-        content = ANALYSIS
+        content = JOURNAL_ANALYSIS if has_journal else ANALYSIS
     elif "wiki 维护者" in system:
-        content = GENERATION
+        content = JOURNAL_GENERATION if has_journal else GENERATION
     else:
         content = "未知角色"
     return {

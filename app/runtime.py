@@ -6,6 +6,7 @@ import threading
 from typing import Optional
 
 from .config import Config
+from .gitrepo import GitRepo
 from .wiki import WikiStore
 
 
@@ -13,6 +14,7 @@ class Runtime:
     def __init__(self, config: Config) -> None:
         self.config = config
         self.store = WikiStore(config.data_dir)
+        self.git = GitRepo(config.data_dir)  # 用户/LLM 写操作留痕
         self.search = None          # SearchIndex（main startup 注入）
         self.ingest = None          # IngestManager（main startup 注入）
         self.search_lock = threading.Lock()

@@ -7,6 +7,7 @@ import pytest
 from app import paths
 from app.config import Config
 from app.journal import JournalStore
+from app.wiki import WikiStore
 
 
 @pytest.fixture()
@@ -163,6 +164,100 @@ def test_named_entry_in_stream(store):
     assert named.name == "重点记录"
     assert named.preview == "改完名还在流里"
     assert entries[0].name is None  # 时间戳命名的没有名字
+
+
+# ---------- LLM 整理随手记 ----------
+
+def test_source_text_chronological_with_names(store):
+    a = store.add_entry("第一条")
+    b = store.add_entry("第二条")
+    renamed = store.add_entry("第三条")
+    store.rename_entry(renamed, "夜跑记录")
+    ts = time.mktime(time.strptime("2026-01-01 08:00:00", "%Y-%m-%d %H:%M:%S"))
+    _set_mtime(store, a, ts)
+    _set_mtime(store, b, ts + 1)
+    _set_mtime(store, "夜跑记录", ts + 2)
+    text = store.source_text()
+    # 时间正序；带名字的记录头上有（名字）
+    assert text.index("第一条") < text.index("第二条") < text.index("第三条")
+    assert "（夜跑记录）" in text
+    # 空记录不进源文本
+    store.add_entry("")
+    assert "（空白" not in store.source_text()
+
+
+def test_source_text_truncates(store):
+    store.add_entry("短记录")
+    long_id = store.add_entry("长" * 100)
+    _set_mtime(store, long_id, time.mktime(time.strptime("2026-01-01 08:00:00", "%Y-%m-%d %H:%M:%S")))
+    text = store.source_text(max_chars=50)
+    assert "更早的记录已截断" in text
+    assert "长" * 100 not in text
+
+
+def test_apply_journal_block_revise_existing(store):
+    """LLM 修订已存在条目：内容更新，时间不丢。"""
+    from app import fileblocks
+    from app.ingest import IngestManager
+
+    eid = store.add_entry("晚上跑了三公里")
+    ts = time.mktime(time.strptime("2026-01-01 08:00:00", "%Y-%m-%d %H:%M:%S"))
+    _set_mtime(store, eid, ts)
+    text = (f"---FILE: journal/{eid}.md---\n"
+            "晚上跑了三公里（AI 整理：保持原意）\n"
+            "---END FILE---\n")
+    blocks, _ = fileblocks.parse_file_blocks(text, ("wiki", "journal"))
+    mgr = IngestManager.__new__(IngestManager)
+    mgr.store = WikiStore(store.data_dir)
+    key, kind, action, warning = mgr._apply_journal_block(blocks[0])
+    assert (key, kind, action) == (eid, "journal", "update")
+    assert warning is None
+    assert store.get_entry(eid) == "晚上跑了三公里（AI 整理：保持原意）"
+    d, t = store.entry_datetime(eid)
+    assert (d, t) == ("2026-01-01", "08-00-00")
+
+
+def test_apply_journal_block_rejects_missing(store):
+    """只能修订已存在的条目：不存在的拒绝。"""
+    from app import fileblocks
+    from app.ingest import IngestManager
+
+    text = ("---FILE: journal/不存在的条目.md---\n"
+            "任意内容\n---END FILE---\n")
+    blocks, _ = fileblocks.parse_file_blocks(text, ("wiki", "journal"))
+    mgr = IngestManager.__new__(IngestManager)
+    mgr.store = WikiStore(store.data_dir)
+    key, kind, action, warning = mgr._apply_journal_block(blocks[0])
+    assert key is None and action is None
+    assert "只能修订已存在" in warning
+
+
+def test_parse_file_blocks_journal_root_gate():
+    """journal/ 只在显式开放 roots 时可写；默认只允许 wiki/。"""
+    from app import fileblocks
+
+    text = ("---FILE: journal/任意.md---\n内容\n---END FILE---\n")
+    blocks, warnings = fileblocks.parse_file_blocks(text)
+    assert blocks == [] and len(warnings) == 1
+
+    blocks, warnings = fileblocks.parse_file_blocks(text, ("wiki", "journal"))
+    assert len(blocks) == 1 and blocks[0].path == "journal/任意.md"
+
+
+def test_apply_block_journal_rejected_in_normal_run(store):
+    """常规源整理混入 journal/ 块 → 跳过并告警。"""
+    from app import fileblocks
+    from app.ingest import IngestManager
+
+    eid = store.add_entry("原文")
+    text = (f"---FILE: journal/{eid}.md---\n越权改写\n---END FILE---\n")
+    blocks, _ = fileblocks.parse_file_blocks(text, ("wiki", "journal"))
+    mgr = IngestManager.__new__(IngestManager)
+    mgr.store = WikiStore(store.data_dir)
+    key, kind, action, warning = mgr._apply_block(blocks[0], "src.md", journal_run=False)
+    assert key is None and action is None
+    assert "常规整理不允许写 journal" in warning
+    assert store.get_entry(eid) == "原文"  # 原文未被碰
 
 
 def test_fts_index_and_rebuild(tmp_path):

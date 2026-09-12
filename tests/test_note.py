@@ -65,7 +65,7 @@ def test_lint_skips_notes(tmp_path):
 
 
 def test_ingest_rejects_notes_dir(tmp_path):
-    """LLM 提议 wiki/notes/ 路径 → 拒绝（note 只属于人工）。"""
+    """常规整理时 LLM 提议 wiki/notes/ 路径 → 拒绝（note 只属于随手记整理）。"""
     from app import fileblocks
     from app.ingest import IngestManager
 
@@ -76,6 +76,22 @@ def test_ingest_rejects_notes_dir(tmp_path):
     assert len(blocks) == 1
 
     mgr = IngestManager.__new__(IngestManager)  # 不走 __init__（不建线程/LLM）
-    slug, action, warning = mgr._apply_block(blocks[0], "src.md")
+    mgr.store = _store(tmp_path)
+    slug, kind, action, warning = mgr._apply_block(blocks[0], "src.md", journal_run=False)
     assert slug is None and action is None
     assert "不对 LLM 开放" in warning
+
+
+def test_journal_run_allows_notes_dir(tmp_path):
+    """随手记整理时 notes/ 对 LLM 开放。"""
+    from app import fileblocks
+    from app.ingest import IngestManager
+
+    text = ("---FILE: wiki/notes/跑步.md---\n"
+            "---\ntype: note\ntitle: 跑步\n---\n\n晚上跑了三公里\n"
+            "\n---END FILE---\n")
+    blocks, _ = fileblocks.parse_file_blocks(text)
+    mgr = IngestManager.__new__(IngestManager)
+    mgr.store = _store(tmp_path)
+    slug, kind, action, warning = mgr._apply_block(blocks[0], "随手记", journal_run=True)
+    assert slug == "跑步" and kind == "wiki" and action == "create"

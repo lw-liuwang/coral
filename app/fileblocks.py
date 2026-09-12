@@ -22,7 +22,8 @@ class FileBlock(NamedTuple):
     content: str
 
 
-def parse_file_blocks(text: str) -> Tuple[List[FileBlock], List[str]]:
+def parse_file_blocks(text: str,
+                      allowed_roots: tuple = ("wiki",)) -> Tuple[List[FileBlock], List[str]]:
     """解析 LLM 输出 -> (blocks, warnings)。不安全的路径直接拒绝。"""
     warnings: List[str] = []
     blocks: List[FileBlock] = []
@@ -62,7 +63,7 @@ def parse_file_blocks(text: str) -> Tuple[List[FileBlock], List[str]]:
             opener = OPENER_RE.match(stripped)
             if opener:
                 raw_path = opener.group(1).strip()
-                if not is_safe_ingest_path(raw_path):
+                if not is_safe_ingest_path(raw_path, allowed_roots):
                     warnings.append(f"拒绝不安全路径的块: {raw_path!r}")
                 else:
                     current_path = normalize_ingest_path(raw_path)

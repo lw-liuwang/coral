@@ -9,11 +9,23 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 from app import frontmatter as fm_mod
 from app import index_log, paths, runtime
+from app.gitrepo import USER_AUTHOR
 from app.kbtemplates import KB_TEMPLATES
 from app.render import render_markdown
 from app.views import templates
 
 router = APIRouter()
+
+
+def _wiki_rel(slug: str, page_type: str) -> str:
+    return f"wiki/{paths.WIKI_DIRS[page_type]}/{slug}.md"
+
+
+def _git(request: Request, rels: list, message: str) -> None:
+    """用户写操作留痕（index/log 随 wiki 页面一起提交）。"""
+    git = _rt(request).git
+    if git:
+        git.commit(rels + ["wiki/index.md", "wiki/log.md"], USER_AUTHOR, message)
 
 BACKLINK_RE_CACHE: dict = {}
 
@@ -76,6 +88,8 @@ def kb_pin(request: Request, key: str = Form(...), next: str = Form("/kb")):
         return templates.TemplateResponse("error.html", {
             "request": request, "message": f"未知模板: {key}"}, status_code=404)
     PinStore(rt.store.data_dir).toggle(key)
+    if _rt(request).git:
+        _rt(request).git.commit(["kb_pins.json"], USER_AUTHOR, f"知识库：置顶切换 {key}")
     # 只允许站内相对跳转
     if not next.startswith("/") or next.startswith("//"):
         next = "/kb"
@@ -125,6 +139,7 @@ def page_new_create(request: Request, title: str = Form(...), type: str = Form(.
     rt.store.save_page(slug, fm, body)
     index_log.append_log(rt.store, "create", title)
     _after_write(request, slug)
+    _git(request, [_wiki_rel(slug, type)], f"页面：新建 {title}")
     return RedirectResponse(f"/pages/{quote(slug)}", status_code=302)
 
 
@@ -220,6 +235,8 @@ def page_edit_save(request: Request, slug: str, content: str = Form(...)):
             "error": f"保存失败：{e}"}, status_code=400)
     index_log.append_log(rt.store, "edit", str(new_fm.get("title") or slug))
     _after_write(request, slug)
+    _git(request, [_wiki_rel(slug, str(new_fm.get("type") or old_type))],
+         f"页面：编辑 {new_fm.get('title') or slug}")
     return RedirectResponse(f"/pages/{quote(slug)}", status_code=302)
 
 
@@ -243,6 +260,8 @@ def page_retype(request: Request, slug: str, new_type: str = Form(...)):
                          str(fm.get("title") or slug),
                          [f"{old_type} → {new_type}"])
     _after_write(request, slug)
+    _git(request, [_wiki_rel(slug, old_type), _wiki_rel(slug, new_type)],
+         f"页面：{old_type} → {new_type} {fm.get('title') or slug}")
     return RedirectResponse(f"/pages/{quote(slug)}", status_code=302)
 
 
@@ -252,12 +271,13 @@ def page_delete(request: Request, slug: str):
     slug = unquote(slug)
     page = rt.store.get_page(slug)
     if page is not None:
-        _, fm, _ = page
+        page_type, fm, _ = page
         rt.store.delete_page(slug)
         index_log.append_log(rt.store, "delete", str(fm.get("title") or slug))
         index_log.rebuild_index(rt.store)
         if rt.search:
             rt.search.remove_page(slug)
+        _git(request, [_wiki_rel(slug, page_type)], f"页面：删除 {fm.get('title') or slug}")
     return RedirectResponse("/pages", status_code=302)
 
 

@@ -18,6 +18,8 @@ def create_app(config: Config = None) -> FastAPI:
     paths.init_data_dirs(config.data_dir)
     rt = runtime.init_runtime(config)
     index_log.ensure_initialized(rt.store)
+    from . import views
+    views.init_pins(config.data_dir)
 
     app = FastAPI(title="coral", docs_url=None, redoc_url=None)
     app.state.runtime = rt

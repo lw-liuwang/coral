@@ -7,7 +7,7 @@
     <form class="inline" action="/kb/pin" method="post">
       <input type="hidden" name="key" value="jobs">
       <input type="hidden" name="next" value="/jobs">
-      <button class="btn" type="submit">{{ "★ 已置顶" if pinned else "☆ 置顶到知识库" }}</button>
+      <button class="btn" type="submit">{{ "★ 已置顶（顶栏直达）" if pinned else "☆ 置顶到顶栏" }}</button>
     </form>
     <a class="btn primary" href="/jobs/new">＋ 记一次投递</a>
   </span>

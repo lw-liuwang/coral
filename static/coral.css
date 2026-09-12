@@ -34,6 +34,7 @@ a:hover { text-decoration: underline; }
 .topbar nav { display: flex; gap: 0.9rem; }
 .topbar nav a { color: var(--muted); }
 .topbar nav a:hover { color: var(--fg); text-decoration: none; }
+.topbar nav a.nav-pin { color: #9a5b00; font-weight: 550; }
 .searchbox { margin-left: auto; }
 .searchbox input {
   width: 220px; padding: 0.35rem 0.7rem;

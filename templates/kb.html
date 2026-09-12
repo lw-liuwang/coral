@@ -31,7 +31,7 @@
       <form class="inline pin-form" action="/kb/pin" method="post">
         <input type="hidden" name="key" value="{{ t.key }}">
         <input type="hidden" name="next" value="/kb">
-        <button class="btn small" type="submit">{{ "★ 取消置顶" if t.pinned else "☆ 置顶" }}</button>
+        <button class="btn small" type="submit">{{ "★ 取消置顶" if t.pinned else "☆ 置顶到顶栏" }}</button>
       </form>
     </div>
     {% endfor %}

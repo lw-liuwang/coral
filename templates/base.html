@@ -15,6 +15,9 @@
   <nav>
     <a href="/">随手记</a>
     <a href="/kb">知识库</a>
+    {% for t in nav_pins() %}
+    <a class="nav-pin" href="{{ t.url }}">★ {{ t.name }}</a>
+    {% endfor %}
   </nav>
   <form class="searchbox" action="/search" method="get">
     <input type="search" name="q" placeholder="搜索…" value="{{ request.query_params.get('q', '') }}">

@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 from app import frontmatter as fm_mod
 from app import index_log, paths, runtime
+from app.kbtemplates import KB_TEMPLATES
 from app.render import render_markdown
 from app.views import templates
 
@@ -36,13 +37,6 @@ def _after_write(request: Request, slug: str) -> None:
             rt.search.index_page(slug, "wiki", str(fm.get("title") or slug), body)
         else:
             rt.search.remove_page(slug)
-
-
-# 跟踪模板注册表（更多模板在此追加；key 用于置顶持久化）
-KB_TEMPLATES = [
-    {"key": "jobs", "name": "求职跟踪", "desc": "每次投递一行，记录进度与复盘",
-     "url": "/jobs"},
-]
 
 
 @router.get("/kb")

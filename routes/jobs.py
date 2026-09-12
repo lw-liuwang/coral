@@ -104,8 +104,10 @@ def job_advance(request: Request, slug: str, status: str = Form(...),
 
 
 @router.post("/jobs/{slug}/retro")
-def job_retro(request: Request, slug: str, content: str = Form(...)):
+def job_retro(request: Request, slug: str, content: str = Form("")):
     slug = unquote(slug)
+    if not content.strip():  # 空复盘不追加也不报错
+        return RedirectResponse(f"/jobs/{quote(slug)}", status_code=302)
     try:
         job = _jobs(request).append_retro(slug, content)
     except ValueError as e:

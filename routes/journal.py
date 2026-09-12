@@ -95,7 +95,8 @@ def journal_edit_form(request: Request, entry_id: str):
 
 
 @router.post("/journal/{entry_id}/edit")
-def journal_edit_save(request: Request, entry_id: str, content: str = Form(...)):
+def journal_edit_save(request: Request, entry_id: str, content: str = Form("")):
+    """清空内容是合法操作（变回只有时间戳的记录）。"""
     store = _journal(request)
     entry_id = unquote(entry_id)
     try:
@@ -108,9 +109,11 @@ def journal_edit_save(request: Request, entry_id: str, content: str = Form(...))
 
 
 @router.post("/journal/{entry_id}/rename")
-def journal_rename(request: Request, entry_id: str, name: str = Form(...)):
-    """改记录名：内容与时间不变，FTS 换到新名字下。"""
+def journal_rename(request: Request, entry_id: str, name: str = Form("")):
+    """改记录名：内容与时间不变，FTS 换到新名字下。没输入名字就不动。"""
     entry_id = unquote(entry_id)
+    if not (name or "").strip():
+        return RedirectResponse(f"/journal/{quote(entry_id)}", status_code=302)
     rt = _rt(request)
     store = _journal(request)
     try:

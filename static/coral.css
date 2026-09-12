@@ -200,7 +200,10 @@ table.files th { background: var(--code-bg); }
   box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }
 .quick-write textarea {
-  width: 100%; min-height: 160px; border: 1px solid var(--border); border-radius: 8px;
+  width: 100%;
+  height: calc(100vh - 240px);   /* 占满首屏：视口高 - 顶栏/提示/按钮 */
+  min-height: 300px;
+  border: 1px solid var(--border); border-radius: 8px;
   padding: 0.8rem; font: inherit; line-height: 1.7; resize: vertical; background: var(--bg);
 }
 .quick-write textarea:focus { border-color: var(--accent); outline: none; }
@@ -217,7 +220,10 @@ table.files th { background: var(--code-bg); }
 .entry-preview { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .entry-link:hover .entry-preview { color: var(--accent-dark); }
 .big-editor textarea {
-  width: 100%; min-height: 420px; border: 1px solid var(--border); border-radius: 8px;
+  width: 100%;
+  height: calc(100vh - 200px);   /* 编辑页同样占满首屏 */
+  min-height: 300px;
+  border: 1px solid var(--border); border-radius: 8px;
   padding: 0.9rem; font: inherit; line-height: 1.7; resize: vertical; background: var(--bg);
 }
 .big-editor textarea:focus { border-color: var(--accent); outline: none; }

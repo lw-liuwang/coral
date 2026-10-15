@@ -1,130 +1,168 @@
-# 🪸 coral
+# coral
 
-**知识如珊瑚，一点点分泌，终成礁石。**
+coral 是使用 TypeScript 编写的自托管 Markdown 知识库，同时提供 Web 应用和只读 MCP 接口。一个知识库对应一个 Obsidian Vault。主要使用 Obsidian 书写，Web 用于浏览和临时修改，agent 通过 MCP 查询内容。
 
-coral 是一个轻量级的、运行在 Linux 上的 **Web 版 LLM 知识库**：
+- 首页列出知识库，可创建独立的 Obsidian Vault；进入知识库后创建或上传 Markdown 文档。
+- 按 Obsidian 文件夹浏览文档，支持临时创建、编辑、删除和实时预览 Markdown；没有固定文档分类。
+- CodeMirror Markdown 编辑器：语法高亮、格式工具栏、撤销重做、书写/分栏/预览、专注模式；支持 Ctrl/Cmd+S 保存、Ctrl/Cmd+B/I 格式化。编辑保存后可继续书写，手机默认使用书写视图。
+- 未保存内容自动保留在当前浏览器的本地草稿中，下次打开可恢复或丢弃；本地草稿不等于已写入知识库文件，保存成功后清除。恢复旧草稿同样执行文档版本校验。
+- 新建文档默认保存到当前目录，也可填写库内相对目录；上传 `.md` / `.markdown` 到当前目录，同目录同名文件添加数字后缀，不同目录可同名。
+- 文档和文件夹列表可直接删除；确认后移入所属 Vault 的 `.trash/<批次>/<原相对路径>`，文件夹包含附件、隐藏文件和子目录。网页回收站支持恢复、彻底删除和清空；恢复遇到同名内容时拒绝覆盖，删除前校验版本，内容已被 Obsidian 修改时要求刷新。
+- 知识库也可移入回收站，立即停止网页和 MCP 访问，重启后仍保持回收状态。首页可查看全部回收内容，知识库工具菜单可查看当前库的回收站；彻底删除和清空均需确认。
+- 多知识库切换，支持中文和英文全文搜索、反向链接与结构检查。
+- Obsidian 直接打开同一个文件夹；网页和 MCP 查询时读取磁盘最新内容。
+- MCP 支持列出知识库、列出文档、搜索、分片读取及原始文件下载。
+- 所有公开文档标识均为 `coral://vault/<id>/<document>`，不会返回服务器本机路径。
+- 网页写操作通过 Git 留痕；编辑时校验 SHA-256 版本，防止覆盖 Obsidian 的外部修改。
 
-- **导入笔记** → LLM 两步分析（先理解、再生成的 chain-of-thought）→ 自动生成结构化 wiki
-- **网页浏览**：Markdown 渲染、`[[wikilink]]` 跳转、frontmatter 元信息、断链标红
-- **网页编辑**：实时预览编辑器，直接写回磁盘上的 Markdown 文件
-- **中文全文搜索**：SQLite FTS5 + CJK 逐字切分（零外部依赖）
-- **结构检查（Lint）**：断链、孤儿页发现
+## 运行
 
-理念源自 [Karpathy 的 llm-wiki 模式](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)：
-知识**编译一次、持续维护**，而非每次查询重新推导。Markdown 文件是知识的唯一真源，
-数据库只是可随时重建的索引。
-
-## 快速开始
+需要 **Node.js 22.13+**，推荐 Node.js 22 或 24 LTS：
 
 ```bash
-bash run.sh          # 创建 venv → 装依赖 → 启动，访问 http://127.0.0.1:8300
+npm ci
+npm run build
+npm start
 ```
 
-Docker：
+也可以运行 `bash run.sh`。默认访问 http://127.0.0.1:8300 ，MCP 端点为 http://127.0.0.1:8300/mcp 。
+
+开发模式：`npm run dev`。后端、浏览器代码及 MCP 均使用 TypeScript；浏览器资源本地打包，无外部 CDN。SQLite 使用 Node.js 内置的 `node:sqlite`，Node.js 22 可能打印实验性 API 提示，不影响使用。
+
+## 配置与 Obsidian
+
+可选配置：将 `config.example.yaml` 复制为 `config.yaml`。默认读取应用目录的配置；配置中的相对路径基于配置文件所在目录，因此 Web 和从其他目录启动的 MCP 客户端会使用同一知识库。
+
+```yaml
+server:
+  host: "127.0.0.1"
+  port: 8300
+data_dir: "./data"
+vaults:
+  project:
+    name: "项目知识库"
+    description: "项目设计与开发资料"
+    path: "/your/obsidian/project"
+```
+
+默认知识库 ID 为 `default`，目录为 `data/wiki/`，保留现有文档。首页点击「创建知识库」，只需填写名称和可选简介；系统自动生成稳定的 UUID 标识，用于目录和 MCP 路径，无需手动配置。新库保存到 `data/vaults/<id>/`，每个知识库是独立文件夹。名称支持中文和重名，已有知识库标识保持不变。
+
+新库包含 `.obsidian/` 和用于保存名称、简介的 `.coral-vault.json`，无需手动修改配置；重启后自动恢复，独立运行的 MCP 进程也会发现新库。已有 Obsidian 文件夹仍可通过配置的 `vaults` 注册。在 Obsidian 中选择「打开文件夹作为仓库」，打开对应文件夹即可；不需要导入或转换。
+
+默认知识库和网页创建的知识库由 Coral 托管，删除整个知识库会将目录移至 `data/.coral/vault-trash/<id>/content`；恢复时移回原位置，彻底删除会删除该目录中的全部内容。通过配置接入的外部 Obsidian Vault 只回收注册记录，不移动原目录；即使彻底删除回收记录，外部文件也会保留。回收期间的知识库标识不能用于创建新库。单个文档和文件夹的回收内容留在所属 Vault 的 `.trash/`，不会参与正常列表、搜索和 MCP 查询。旧版 Coral 批次可在回收站恢复；无法识别的记录（包括 Obsidian 自行放入的原生回收文件）保留在磁盘，清空操作会跳过并提示。
+
+```text
+data/
+├── vaults/               # 网页创建的知识库
+│   └── project/          # 独立 Obsidian Vault
+│       ├── .obsidian/
+│       ├── .coral-vault.json
+│       └── 任意文档.md    # 默认在根目录创建，也可指定子目录
+├── wiki/                 # 默认 Obsidian Vault
+│   ├── .obsidian/        # Obsidian 自行管理，coral 不读取
+│   ├── 任意文档.md
+│   └── 任意子目录/        # 保留 Obsidian 原有目录组织
+├── sources/              # 旧版原始资料，保留只读浏览入口
+└── .git/                 # 网页写操作历史
+```
+
+每个 Vault 的 Markdown 是唯一内容真源，搜索索引只存在内存中，随查询重建。支持标准 YAML 属性、自定义属性、`[[文件]]`、`[[目录/文件|别名]]`、`[[文件#标题]]`、标准 Markdown 相对链接和本地图片。跨目录同名文件请使用带目录的引用。已有默认 Vault 的 `index.md`、`log.md` 保留在磁盘，但不参与文档列表和搜索；外部 Vault 的同名文件正常参与。
+
+旧的 `notes/`、`concepts/`、`entities/`、`sources/` 不会自动创建，也不会移动或删除已有目录和文档。已有 YAML `type`、`tags` 等属性均作为普通属性保留，新建文档不再自动添加 `type`。可以在 Obsidian 中按自己的目录和标签组织内容。
+
+隐藏文件、隐藏目录和符号链接不对外暴露。Markdown 文件大小上限为 16 MiB；文本读取要求 UTF-8，下载保持原始字节。非 UTF-8 或超大文档会在列表中报告跳过数量，非 UTF-8 文档仍可按已知 URI 下载。上传使用 UTF-8，`.markdown` 扩展名转为 `.md`。Obsidian 的插件、Canvas、Dataview、块引用和笔记嵌入不在网页执行。
+
+环境变量优先：`CORAL_CONFIG`、`CORAL_DATA_DIR`、`CORAL_HOST`、`CORAL_PORT`。
+
+## MCP 接入
+
+支持官方 MCP SDK 的 **Streamable HTTP** 与 **stdio** 两种传输。MCP 完全只读，Web 可以编辑知识库。
+
+HTTP 客户端连接：
+
+```json
+{
+  "mcpServers": {
+    "coral": {
+      "url": "http://127.0.0.1:8300/mcp"
+    }
+  }
+}
+```
+
+不同客户端的 HTTP 配置字段可能不同，请将该地址配置为 Streamable HTTP 服务端点。
+
+stdio 客户端无需启动 Web，使用编译后的入口（下面的应用路径按实际位置填写）：
+
+```json
+{
+  "mcpServers": {
+    "coral": {
+      "command": "node",
+      "args": ["/path/to/coral/dist/stdio.js"],
+      "env": { "CORAL_CONFIG": "/path/to/coral/config.yaml" }
+    }
+  }
+}
+```
+
+开发时可以使用 `npm run mcp`；客户端直接执行 `node dist/stdio.js` 可避免 npm 的标准输出混入协议。
+
+| 工具 | 参数 | 返回 |
+|---|---|---|
+| `list_vaults` | 无 | 名称、简介、Vault URI、可用状态、文档数量 |
+| `list_documents` | `vault_id`、可选 `directory/cursor/limit` | 文档 URI、库内相对路径 `path`、标题、版本、下一页游标；包含指定目录的子目录文档 |
+| `search_documents` | `query`、可选 `vault_id/cursor/limit` | 相关片段、行号、文档 URI、版本 |
+| `read_document` | `uri`、可选 `offset/max_chars/heading/version` | 原始 Markdown 分片、目录、版本、下一片偏移 |
+| `download_document` | `uri` | 原始文件字节（MCP embedded resource 的 Base64 blob）和文件元信息 |
+
+建议 agent 的调用流程：
+
+```text
+list_vaults()
+→ search_documents(query="索引设计", vault_id="project")
+→ read_document(uri="coral://vault/project/docs/design.md")
+→ 需要完整文件时调用 download_document(uri=同一个URI)
+```
+
+`read_document` 默认每片 16,000 个 UTF-16 单元，上限 64,000，`next_offset` 为 `null` 表示读取完成；继续读取时传入返回的 `version`，文件变化会报错，避免拼接不同版本。指定 `heading` 时读取唯一的 ATX 标题及其子章节，偏移相对于该章节。目录最多返回 100 个标题，具体偏移单位与 JavaScript 字符串一致。
+
+也支持 `resources/read` 和资源模板 `coral://vault/{vault_id}/{+path}`，单个资源文本上限 1 MiB；更大的文档使用分片工具或下载工具。
+
+普通 HTTP 文件下载同样只接受资源 URI：
+
+```bash
+curl --get 'http://127.0.0.1:8300/download' \
+  --data-urlencode 'uri=coral://vault/project/docs/design.md' \
+  --output design.md
+```
+
+`coral://` 是资源标识，不是操作系统路径或可直接访问的 HTTP URL。文件下载由 MCP 客户端解码 blob，或通过上面的 HTTP 端点保存。URI 中的空格、中文、`#`、`?` 等字符按标准百分号编码。
+
+服务默认只监听本机，当前没有账号或鉴权；需要跨机器访问时，应通过带鉴权的反向代理接入。
+
+## Docker
 
 ```bash
 docker build -t coral .
 docker run -d -p 8300:8300 -v /your/data:/data coral
 ```
 
-依赖：Python 3.9+（仅 8 个 pip 包：fastapi / uvicorn / jinja2 / PyYAML / httpx /
-python-multipart / Markdown / Pygments）。无 Node.js、无前端构建、无外部 CDN。
+更多 Vault 可通过挂载配置文件和对应目录注册。宿主机 Obsidian 打开 `/your/data/wiki/`。
 
-## 配置 LLM
-
-`config.yaml` 不入库（避免误提交密钥）；从 git clone 使用时先复制模板（也可以不复制，
-全部字段都有默认值）：
+## 验证
 
 ```bash
-cp config.example.yaml config.yaml
+npm run typecheck
+npm test
+npm run build
 ```
 
-编辑 `config.yaml`，把 `llm.base_url` 指向任意 OpenAI 兼容端点（vLLM / 内网推理服务）：
+测试覆盖文件安全、Obsidian 互操作、中文搜索、文档版本、上传下载、网页操作，以及使用官方客户端进行 HTTP/stdio MCP 调用。浏览器测试：`npx playwright install chromium` 后运行 `npm run test:browser`。
 
-```yaml
-llm:
-  base_url: "http://127.0.0.1:8000/v1"
-  api_key: ""                  # 内网自部署端点通常留空
-  model: "qwen2.5-32b-instruct"
-  max_output_tokens: 8192
-```
+## 迁移
 
-### 没有真实端点？用 mock 联调
-
-```bash
-python scripts/mock_llm.py 8400      # 启动假 LLM（含一个恶意路径块，验证安全闸门）
-# config.yaml: llm.base_url 改为 http://127.0.0.1:8400/v1
-```
-
-## 使用流程
-
-核心交互只有两个入口，用户不需要理解 wiki 的技术概念：
-
-- **随手记**（首页）：打开就能写，一条就是一条——时间完全由系统后台记录（每条存成一个时间戳命名的文件），不暴露「天/文件」概念；空着点「写下来」也会记下这个时刻；每条可单独查看/编辑/删除/改名（时间不丢）。记录流页的「✨ AI 整理成笔记」把全部随手记交给 LLM 按主题聚合成笔记页（`wiki/notes/`），明显笔误可直接修订原文（仅限已存在条目，git 留痕）
-- **知识库**：两类内容
-  - **跟踪模板**：目前内置「求职跟踪」——每次投递一行（公司/岗位/投递时间），记录页一键推进状态（待投→已投→笔试→面试→offer/挂）并追加复盘；表格按「越接近面试时间越靠前」排序，已结束沉底。更多模板（读书、项目、健身…）规划中
-  - **整理的知识**：上传文档（`.md` / `.markdown` / `.txt`）后**自动**由 LLM 两步管线整理成实体/概念页面（无需任何勾选或跳转，知识库页显示整理进度，完成后自动刷新）；随时网页编辑，`[[链接]]` 穿行；断链在页面内直接标出，结构体检（`/lint`）保留为后台工具
-
-顶栏**搜索**覆盖全部：随手记、投递记录、wiki 页面、资料原文。
-
-## 数据布局
-
-```
-data/                # 自成 git 仓库：用户/LLM 每次写操作各成一个 commit
-├── journal/         # 随手记：一条一个文件（时间戳或改名命名，如 2026-09-12_16-34-45.md）
-├── jobs/            # 求职投递记录（每次投递一个文件，含状态时间线）
-├── sources/         # 你导入的原始笔记（LLM 只读）
-├── wiki/
-│   ├── entities/    # 人物、组织、产品、工具…
-│   ├── concepts/    # 理论、方法、技术…
-│   ├── sources/     # 每份来源的总结页
-│   ├── notes/       # 随手记聚合出的笔记页（type: note）
-│   ├── index.md     # 内容目录（应用自动维护）
-│   └── log.md       # 操作日志（应用自动维护）
-└── coral.db         # FTS 索引 + ingest 历史（可随时重建，不进版本库）
-```
-
-git 作者区分操作来源：`coral-user`（网页上的用户操作）/ `coral-llm`（ingest 管线）。
-git 不可用时静默降级为不留痕，功能不受影响。
-
-## Ingest 管线（两步 Chain-of-Thought）
-
-```
-源文件 → Step1 分析（注入现有 index.md，产出实体/概念/关联报告）
-       → Step2 生成（输出 ---FILE: wiki/path.md--- 文本块）
-       → 应用裁决落盘：
-           · 路径闸门：必须 wiki/ 下、无 ../、非绝对路径（防注入）
-           · union 字段（tags/related/sources）做并集
-           · locked 字段（type/title/created）保留旧值
-           · 单源页面重新 ingest → 直接替换（幂等）
-           · 多源页面 → 追加「来自《源》的补充」小节
-       → 重建 index.md、追加 log.md、更新 FTS
-```
-
-原则：**LLM 提议，应用裁决**。LLM 输出一律视为不可信输入，坏块只拒绝不放弃整个任务，
-所有告警显示在导入历史里。
-
-随手记整理（虚拟源「随手记」）走同一条管线，差别仅在：
-
-- 允许写 `wiki/notes/`（type: note），不生成来源总结页
-- 额外允许 `journal/` 修订块：只能改**已存在**的条目（纯文本、保持记录时间），
-  不存在即拒绝——LLM 不能凭空造/删随手记
-
-## 测试
-
-```bash
-source venv/bin/activate
-pip install pytest
-pytest tests/ -v
-```
-
-## 路线图（v2）
-
-- Chat RAG 问答（带引用）
-- 知识图谱可视化
-- PDF / Word 导入
-- 向量语义搜索
-- 长文档分块 ingest
+旧版 Python 服务已由 TypeScript 替代，不再需要 Python、pip 或 LLM 配置。现有 `data/wiki/` 和额外注册的 Vault 可以直接使用，不会搬移或批量转换原文件。旧 `journal/`、`jobs/`、`coral.db` 等文件保留，但不再加载。
 
 ## License
 

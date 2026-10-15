@@ -30,6 +30,21 @@ async function fixture() {
 }
 const params = (data: Record<string, string>) => ({ method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(data), redirect: 'manual' as const });
 
+test('cyclic YAML properties render safely and corrupt Vault trash states do not break other pages', async () => {
+  const { base, project, registry } = await fixture();
+  writeFileSync(join(project, 'cycle.md'), '---\nvalue: &value\n  self: *value\n---\n# Circular YAML');
+  const page = await fetch(base + '/document?' + new URLSearchParams({ uri: 'coral://vault/project/cycle.md' }));
+  assert.equal(page.status, 200);
+  assert.ok((await page.text()).includes('Circular YAML'));
+  const state = join(registry.config.data_dir, '.coral/vault-trash/damaged');
+  mkdirSync(state, { recursive: true });
+  writeFileSync(join(state, 'state.json'), '{');
+  const trash = await fetch(base + '/trash');
+  assert.equal(trash.status, 200);
+  assert.ok((await trash.text()).includes('1 项回收内容无法读取'));
+  assert.equal((await fetch(base)).status, 200);
+});
+
 test('Web app exposes only the knowledge base and supports multiple Vaults', async () => {
   const { base } = await fixture();
   const response = await fetch(base);
@@ -60,6 +75,23 @@ test('manual create, edit, conflict, search and delete over HTTP', async () => {
   const deleted = await fetch(base + '/delete', params({ uri: doc.uri, version: registry.document(doc.uri).version }));
   assert.equal(deleted.status, 303);
   assert.equal((await fetch(base + location)).status, 404);
+});
+
+test('create empty folders through Web with conflict errors preserving the parent and name', async () => {
+  const { base, project } = await fixture();
+  assert.equal((await fetch(base + '/directories/new?vault=project&directory=docs')).status, 200);
+  const fields = { vault: 'project', directory: 'docs', name: '设计资料' };
+  const created = await fetch(base + '/directories/new', params(fields));
+  assert.equal(created.status, 303);
+  assert.equal(new URL(created.headers.get('location')!, base).searchParams.get('directory'), 'docs');
+  const listing = await (await fetch(base + created.headers.get('location'))).text();
+  assert.ok(listing.includes('设计资料'));
+  const conflict = await fetch(base + '/directories/new', params(fields));
+  assert.equal(conflict.status, 409);
+  const errorPage = await conflict.text();
+  assert.ok(errorPage.includes('同名') && errorPage.includes('value="设计资料"') && errorPage.includes('value="docs"'));
+  assert.equal((await fetch(base + '/directories/new', params({ ...fields, name: '../escape' }))).status, 400);
+  assert.ok(readFileSync(join(project, 'docs/design.md'), 'utf8').includes('数据库索引设计'));
 });
 
 test('catalog creates a knowledge base before documents and preserves form errors', async () => {

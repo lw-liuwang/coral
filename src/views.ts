@@ -1,6 +1,7 @@
 import { resourceUri, safeParts } from './content.js';
 import { randomBytes } from 'node:crypto';
-import { editUrl, renderMarkdown, resolveLink, viewUrl, wikiTargets } from './markdown.js';
+import { backlinksFor, editUrl, renderMarkdown, resolveLink, viewUrl, wikiTargets } from './markdown.js';
+import { stringify } from 'yaml';
 import type { Document, VaultRegistry } from './vault.js';
 
 export const escape = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]!));
@@ -49,10 +50,17 @@ export function home(registry: VaultRegistry, vaultId: string, options: { upload
   const crumbs = `<nav class="breadcrumbs" aria-label="目录"><a href="${escape(location(''))}">根目录</a>${parts.map((part, index) => `<span>/</span><a href="${escape(location(parts.slice(0, index + 1).join('/')))}">${escape(part)}</a>`).join('')}</nav>`;
   const remove = (action: string, uri: string, version: string, message: string, label: string) => `<form class="row-delete" action="${action}" method="post" data-confirm="${escape(message)}"><input type="hidden" name="uri" value="${escape(uri)}"><input type="hidden" name="version" value="${escape(version)}"><button type="submit" class="icon-btn danger" title="${escape(label)}" aria-label="${escape(label)}">${icon('trash-2')}</button></form>`;
   const items = `<ul class="page-list file-list">${directory ? `<li><a href="${escape(location(parts.slice(0, -1).join('/')))}">${icon('corner-left-up')}上级目录</a></li>` : ''}${scan.directories.map(folder => `<li><div class="file-entry"><a class="page-link" href="${escape(location(folder.relative))}">${icon('folder')}${escape(folder.name)}</a><span class="muted">${folder.document_count} 个文档</span></div>${folder.version ? remove('/delete-directory', resourceUri(vaultId, folder.relative), folder.version, `删除文件夹「${folder.relative}」？其中全部 ${folder.file_count} 个文件（含附件）和子目录将一起移入知识库回收站。`, `删除文件夹：${folder.name}`) : ''}</li>`).join('')}${scan.documents.map(doc => `<li><div class="file-entry"><a class="page-link" href="${escape(viewUrl(doc.uri))}">${icon('file-text')}${escape(doc.title)}</a><span class="muted">${escape(doc.relative.split('/').at(-1))}</span></div><span class="muted file-updated">${escape(doc.metadata.updated)}</span>${remove('/delete', doc.uri, doc.version, `将文档「${doc.relative}」移入知识库回收站？`, `删除文档：${doc.title}`)}</li>`).join('')}</ul>`;
-  return layout(registry, vault.name, `<div class="page-head"><h1>${escape(vault.name)} <span class="muted">${scan.total} 个文档</span></h1><div class="btns">${linkButton('/new?' + new URLSearchParams({ vault: vaultId, directory }), '创建文档', 'file-plus', true)}<details class="tools-menu"><summary class="icon-btn" aria-label="知识库工具" title="知识库工具">${icon('ellipsis')}</summary><nav aria-label="知识库工具"><a href="/trash?vault=${escape(vaultId)}">${icon('trash-2')}回收站</a><a href="/lint?vault=${escape(vaultId)}">${icon('scan-search')}结构检查</a></nav></details></div></div>
+  return layout(registry, vault.name, `<div class="page-head"><h1>${escape(vault.name)} <span class="muted">${scan.total} 个文档</span></h1><div class="btns">${linkButton('/new?' + new URLSearchParams({ vault: vaultId, directory }), '创建文档', 'file-plus', true)}${linkButton('/directories/new?' + new URLSearchParams({ vault: vaultId, directory }), '创建文件夹', 'folder-plus')}<details class="tools-menu"><summary class="icon-btn" aria-label="知识库工具" title="知识库工具">${icon('ellipsis')}</summary><nav aria-label="知识库工具"><a href="/trash?vault=${escape(vaultId)}">${icon('trash-2')}回收站</a><a href="/lint?vault=${escape(vaultId)}">${icon('scan-search')}结构检查</a></nav></details></div></div>
     ${options.deleted ? '<div class="alert ok" role="status">已移入知识库回收站。</div>' : ''}${options.upload ? `<div class="alert ok">已导入 ${options.upload} 个 Markdown 文档。</div>` : ''}${options.rejected ? alert(`${options.rejected} 个文件无法导入，仅支持有效的 UTF-8 Markdown 文档。`) : ''}${scan.skipped ? alert(`${scan.skipped} 个文档无法读取或超过大小限制。`) : ''}
     <form class="kb-upload" action="/upload" method="post" enctype="multipart/form-data"><input type="hidden" name="vault" value="${escape(vaultId)}"><input type="hidden" name="directory" value="${escape(directory)}"><input type="file" name="files" accept=".md,.markdown" multiple required aria-label="Markdown 文档"><button class="btn" type="submit">${icon('upload')}上传 Markdown</button>${vaultId === 'default' && registry.legacyFiles().length ? '<a class="muted" href="/sources">历史资料</a>' : ''}</form>
     ${crumbs}${items}${!scan.documents.length && !scan.directories.length ? '<div class="empty"><p>此目录暂无文档。</p></div>' : ''}`, vaultId);
+}
+
+export function newDirectory(registry: VaultRegistry, vaultId: string, directory = '', fields: { name?: string; error?: string } = {}) {
+  registry.browse(vaultId, directory);
+  const backUrl = '/?' + new URLSearchParams({ vault: vaultId, directory });
+  return layout(registry, '创建文件夹', `<div class="page-head"><h1>创建文件夹</h1>${linkButton(backUrl, '返回', 'arrow-left')}</div>${alert(fields.error)}
+    <form class="form" action="/directories/new" method="post"><input type="hidden" name="vault" value="${escape(vaultId)}"><input type="hidden" name="directory" value="${escape(directory)}"><p class="muted">所在目录：${escape(directory || '根目录')}</p><label>文件夹名称<input name="name" required maxlength="255" value="${escape(fields.name)}" autofocus></label><button class="btn primary" type="submit">${icon('folder-plus')}创建文件夹</button></form>`, vaultId);
 }
 
 export function newPage(registry: VaultRegistry, vaultId: string, fields: { title?: string; directory?: string; content?: string; error?: string } = {}) {
@@ -74,12 +82,12 @@ function writingSurface(content: string, label: string) {
 export function documentPage(registry: VaultRegistry, doc: Document) {
   const documents = registry.scan(doc.vaultId).documents;
   const directoryUrl = '/?' + new URLSearchParams({ vault: doc.vaultId, directory: doc.relative.split('/').slice(0, -1).join('/') });
-  const backlinks = documents.filter(other => other.uri !== doc.uri && wikiTargets(other.body).some(target => resolveLink(target, documents, other)?.uri === doc.uri));
+  const backlinks = backlinksFor(documents, doc.uri);
   const properties = Object.entries(doc.metadata).filter(([key]) => key !== 'title');
   return layout(registry, doc.title, `${alert(doc.warning)}<div class="page-head"><h1>${escape(doc.title)}</h1><div class="btns">${linkButton(directoryUrl, '所在目录', 'folder')}${linkButton(editUrl(doc.uri), '编辑', 'pencil')}${linkButton('/download?uri=' + encodeURIComponent(doc.uri), '下载', 'download')}
     <form class="inline" action="/delete" method="post" data-confirm="将这个文档移入知识库回收站？"><input type="hidden" name="uri" value="${escape(doc.uri)}"><input type="hidden" name="version" value="${doc.version}"><button class="icon-btn danger" title="删除" aria-label="删除">${icon('trash-2')}</button></form></div></div>
     <div class="document-uri"><code>${escape(doc.uri)}</code><button class="icon-btn" type="button" data-copy="${escape(doc.uri)}" title="复制资源 URI" aria-label="复制资源 URI">${icon('copy')}</button></div>
-    ${properties.length ? `<details class="meta"><summary>文档属性</summary><dl>${properties.map(([key, value]) => `<dt>${escape(key)}</dt><dd>${escape(typeof value === 'object' ? JSON.stringify(value) : value)}</dd>`).join('')}</dl></details>` : ''}
+    ${properties.length ? `<details class="meta"><summary>文档属性</summary><dl>${properties.map(([key, value]) => `<dt>${escape(key)}</dt><dd>${escape(typeof value === 'object' ? stringify(value).trimEnd() : value)}</dd>`).join('')}</dl></details>` : ''}
     <article class="md-body">${renderMarkdown(doc.body, documents, doc)}</article>${backlinks.length ? `<section class="backlinks"><h2>反向链接 <span class="muted">${backlinks.length}</span></h2><ul>${backlinks.map(other => `<li><a href="${escape(viewUrl(other.uri))}">${escape(other.title)}</a></li>`).join('')}</ul></section>` : ''}`, doc.vaultId);
 }
 

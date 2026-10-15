@@ -149,6 +149,29 @@ test('create a knowledge base then create and upload Markdown documents', async 
   await expect(page.getByRole('link', { name: '第一篇文档', exact: true })).toHaveCount(0);
 });
 
+test('create empty folders in the current directory and handle duplicate names', async ({ page, applicationUrl }, testInfo) => {
+  await page.goto(applicationUrl + '/?vault=default');
+  await page.getByRole('link', { name: '创建文件夹', exact: true }).click();
+  await page.getByLabel('文件夹名称').fill('项目资料');
+  await page.getByRole('button', { name: '创建文件夹', exact: true }).click();
+  await page.getByRole('link', { name: '项目资料', exact: true }).click();
+  await page.getByRole('link', { name: '创建文件夹', exact: true }).click();
+  await page.getByLabel('文件夹名称').fill('设计文档');
+  await page.getByRole('button', { name: '创建文件夹', exact: true }).click();
+  await expect(page.getByRole('link', { name: '设计文档', exact: true })).toBeVisible();
+  await page.getByRole('link', { name: '创建文件夹', exact: true }).click();
+  await page.getByLabel('文件夹名称').fill('设计文档');
+  await page.getByRole('button', { name: '创建文件夹', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('同名');
+  await expect(page.getByLabel('文件夹名称')).toHaveValue('设计文档');
+  await page.getByRole('link', { name: '返回', exact: true }).click();
+  expect(new URL(page.url()).searchParams.get('directory')).toBe('项目资料');
+  await page.getByRole('link', { name: '设计文档', exact: true }).click();
+  await expect(page.getByRole('link', { name: '创建文档', exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+  await page.screenshot({ path: testInfo.outputPath('empty-folder.png'), fullPage: true });
+});
+
 test('browse Obsidian folders, create and upload in the selected directory', async ({ page, applicationUrl }, testInfo) => {
   await page.goto(applicationUrl + '/?vault=default');
   await page.getByRole('link', { name: '创建文档', exact: true }).click();

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { constants, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, realpathSync, renameSync, lstatSync, unlinkSync, writeFileSync, rmSync, rmdirSync } from 'node:fs';
+import { constants, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, realpathSync, renameSync, lstatSync, unlinkSync, writeFileSync, rmSync, rmdirSync, linkSync } from 'node:fs';
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
@@ -32,10 +32,12 @@ export class VaultRegistry {
   readonly vaults: Map<string, Vault>;
   private db: DatabaseSync;
   private fts: boolean;
+  private scans = new Map<string, { root: string; files: Map<string, { stamp: string; doc?: Document }>; result: { documents: Document[]; skipped: number } }>();
+  private indexed = new Map<string, string>();
 
   constructor(readonly config: Config) {
     const root = join(config.data_dir, 'wiki');
-    if (!this.vaultState('default')) mkdirSync(root, { recursive: true });
+    if (!existsSync(join(this.stateDirectory('default'), 'state.json'))) mkdirSync(root, { recursive: true });
     this.vaults = new Map([['default', { id: 'default', name: '知识库', description: 'coral 网页知识库', root }]]);
     for (const [id, vault] of Object.entries(config.vaults)) {
       this.vaults.set(id, { id, name: vault.name ?? id, description: vault.description, root: vault.path });
@@ -68,7 +70,8 @@ export class VaultRegistry {
         this.vaults.set(entry.name, { id: entry.name, name: manifest.name, description: manifest.description, root });
       } catch { /* Incomplete or unregistered directories are not Vaults. */ }
     }
-    for (const id of this.vaults.keys()) if (this.vaultState(id)) this.vaults.delete(id);
+    for (const id of this.vaults.keys()) if (existsSync(join(this.stateDirectory(id), 'state.json'))) this.vaults.delete(id);
+    for (const id of this.scans.keys()) if (!this.vaults.has(id)) this.scans.delete(id);
   }
 
   private stateDirectory(id: string) {
@@ -225,6 +228,9 @@ export class VaultRegistry {
 
   scan(vaultId: string): { documents: Document[]; skipped: number } {
     const vault = this.vault(vaultId);
+    const cached = this.scans.get(vaultId);
+    const previous = cached?.root === realpathSync(vault.root) ? cached : undefined;
+    const files = new Map<string, { stamp: string; doc?: Document }>();
     const documents: Document[] = [];
     let skipped = 0;
     const walk = (directory: string, prefix = '') => {
@@ -237,13 +243,26 @@ export class VaultRegistry {
         if (entry.isDirectory()) walk(join(directory, entry.name), rel + '/');
         else if (entry.isFile() && /\.(md|markdown)$/i.test(entry.name)) {
           if (vaultId === 'default' && ['index.md', 'log.md'].includes(rel)) continue;
-          try { documents.push(this.document(resourceUri(vaultId, rel))); }
+          try {
+            const stat = lstatSync(join(directory, entry.name), { bigint: true });
+            const stamp = [stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':');
+            let item = previous?.files.get(rel);
+            if (item?.stamp !== stamp) {
+              try { item = { stamp, doc: this.document(resourceUri(vaultId, rel)) }; }
+              catch { item = { stamp }; }
+            }
+            files.set(rel, item!);
+            if (item?.doc) documents.push(item.doc); else skipped++;
+          }
           catch { skipped++; }
         }
       }
     };
     walk(vault.root);
-    return { documents, skipped };
+    const unchanged = previous && files.size === previous.files.size && [...files].every(([path, item]) => previous.files.get(path) === item);
+    const result = unchanged ? previous.result : { documents, skipped };
+    this.scans.set(vaultId, { root: realpathSync(vault.root), files, result });
+    return result;
   }
 
   listVaults() {
@@ -323,7 +342,7 @@ export class VaultRegistry {
     const documents = new Map<string, Document>();
     const unavailable: string[] = [];
     let skipped = 0;
-    this.db.exec('DELETE FROM search; BEGIN');
+    this.db.exec('BEGIN');
     try {
       const insert = this.db.prepare('INSERT INTO search VALUES (?, ?, ?)');
       for (const id of ids) {
@@ -333,10 +352,15 @@ export class VaultRegistry {
         skipped += scan.skipped;
         for (const doc of scan.documents) {
           documents.set(doc.uri, doc);
-          insert.run(doc.uri, this.fts ? cjkSplit(doc.title) : doc.title, this.fts ? cjkSplit(doc.body) : doc.body);
+          if (this.indexed.get(doc.uri) !== doc.version) {
+            if (this.indexed.has(doc.uri)) this.db.prepare('DELETE FROM search WHERE uri = ?').run(doc.uri);
+            insert.run(doc.uri, this.fts ? cjkSplit(doc.title) : doc.title, this.fts ? cjkSplit(doc.body) : doc.body);
+          }
         }
       }
+      for (const uri of this.indexed.keys()) if (!documents.has(uri)) this.db.prepare('DELETE FROM search WHERE uri = ?').run(uri);
       this.db.exec('COMMIT');
+      this.indexed = new Map([...documents.values()].map(doc => [doc.uri, doc.version]));
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
     const match = '"' + cjkSplit(query).replaceAll('"', '""') + '"';
     const rows = this.fts
@@ -351,6 +375,20 @@ export class VaultRegistry {
     });
     return { results, total: rows.length, next_cursor: cursor + limit < rows.length ? cursor + limit : null,
       unavailable_vaults: unavailable, skipped_documents: skipped };
+  }
+
+  createDirectory(vaultId: string, directory: string, name: string) {
+    name = name.trim();
+    if (!name || Buffer.byteLength(name) > 255 || /[\\/:*?"<>|\x00-\x1f\x7f]/.test(name) || name.endsWith('.')) throw new AppError('请输入有效的文件夹名称');
+    safeParts(name);
+    safeParts(directory, true);
+    const parent = directory ? this.filePath(vaultId, directory) : realpathSync(this.vault(vaultId).root);
+    if (!lstatSync(parent).isDirectory()) throw new AppError('上级目录不存在', 404);
+    try { mkdirSync(join(parent, name)); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new AppError('当前目录已有同名文件或文件夹', 409);
+      throw error;
+    }
   }
 
   create(vaultId: string, title: string, body: string, metadata: Record<string, unknown> = {}, filename?: string, folder = ''): Document {
@@ -382,9 +420,26 @@ export class VaultRegistry {
     const metadata = { ...(/^(?:\uFEFF)?---\r?\n/.test(raw) ? parsed.metadata : old.metadata), updated: today() };
     const target = this.filePath(old.vaultId, old.relative);
     const temporary = join(dirname(target), `.coral-${randomUUID()}.tmp`);
+    const backupRoot = join(realpathSync(this.vault(old.vaultId).root), '.coral-backups');
+    try { mkdirSync(backupRoot); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+    if (lstatSync(backupRoot).isSymbolicLink() || !lstatSync(backupRoot).isDirectory()) throw new AppError('文档备份目录不可用');
+    const backupDirectory = join(backupRoot, randomUUID());
+    const backup = join(backupDirectory, basename(target));
     try {
       writeFileSync(temporary, serialize(metadata, parsed.body), { flag: 'wx' });
-      renameSync(temporary, target);
+      if (this.document(uri).version !== old.version) throw new AppError('文档已被修改，请重新打开后再保存', 409);
+      mkdirSync(backupDirectory, { recursive: true });
+      // Move the original inode aside before exclusive creation. Keep it for late writes through external file descriptors.
+      renameSync(target, backup);
+      try {
+        if (!lstatSync(backup).isFile() || digest(readFileSync(backup)) !== old.version) throw new AppError('文档已被修改，原文件已保留，请重新打开', 409);
+        linkSync(temporary, target);
+      } catch (error) {
+        try { linkSync(backup, target); } catch { /* A concurrent writer owns the destination; preserve both copies. */ }
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new AppError('文档已被其他程序写入，原文件备份已保留，请重新打开', 409);
+        throw error;
+      }
     } finally { if (existsSync(temporary)) unlinkSync(temporary); }
     this.commit(this.vault(old.vaultId), [old.relative], `页面：编辑 ${old.title}`);
     return this.document(uri);
@@ -485,7 +540,7 @@ export class VaultRegistry {
 
   listTrash(vaultId?: string) {
     this.refreshVaults();
-    if (vaultId && !this.vaults.has(vaultId) && !this.vaultState(vaultId)) throw new AppError('知识库不存在', 404);
+    if (vaultId && !this.vaults.has(vaultId) && !existsSync(join(this.stateDirectory(vaultId), 'state.json'))) throw new AppError('知识库不存在', 404);
     const items: TrashItem[] = [];
     let skipped = 0;
     for (const vault of [...this.vaults.values()]) {
@@ -506,8 +561,10 @@ export class VaultRegistry {
     }
     const states = join(this.config.data_dir, '.coral', 'vault-trash');
     const vaults = (existsSync(states) ? readdirSync(states) : []).filter(id => validId(id) && (!vaultId || id === vaultId)).flatMap(id => {
-      const state = this.vaultState(id);
-      return state?.state === 'trash' ? [{ id, name: state.name, uri: resourceUri(id), external: state.source === 'external', deleted_at: state.deleted_at, version: digest(Buffer.from(JSON.stringify(state))) }] : [];
+      try {
+        const state = this.vaultState(id);
+        return state?.state === 'trash' ? [{ id, name: state.name, uri: resourceUri(id), external: state.source === 'external', deleted_at: state.deleted_at, version: digest(Buffer.from(JSON.stringify(state))) }] : [];
+      } catch { skipped++; return []; }
     });
     items.sort((a, b) => b.deleted_at.localeCompare(a.deleted_at) || a.vault_id.localeCompare(b.vault_id) || a.id.localeCompare(b.id));
     vaults.sort((a, b) => b.deleted_at.localeCompare(a.deleted_at) || a.id.localeCompare(b.id));
@@ -583,11 +640,11 @@ export class VaultRegistry {
     try {
       if (!existsSync(join(root, '.git'))) {
         git('init', '-q');
-        if (!existsSync(join(root, '.gitignore'))) writeFileSync(join(root, '.gitignore'), 'coral.db*\n*.tmp\n.trash/\n.obsidian/workspace*.json\n');
+        if (!existsSync(join(root, '.gitignore'))) writeFileSync(join(root, '.gitignore'), 'coral.db*\n*.tmp\n.trash/\n.coral-backups/\n.obsidian/workspace*.json\n');
       }
       const files = paths.map(path => vault.id === 'default' ? 'wiki/' + path : path);
       git('add', '-A', '--', ...files);
-      git('commit', '-q', '--author', 'coral-user <coral-user@coral>', '-m', message);
+      git('commit', '-q', '--only', '--author', 'coral-user <coral-user@coral>', '-m', message, '--', ...files);
     } catch { /* Git history is optional; Markdown writes remain authoritative. */ }
   }
 

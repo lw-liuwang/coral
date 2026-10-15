@@ -4,9 +4,11 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, symlinkSync, existsSync, lstatSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { createConfig } from '../src/config.js';
 import { AppError, headings, parseMarkdown, parseUri, resourceUri, serialize } from '../src/content.js';
-import { renderMarkdown, resolveLink, wikiTargets } from '../src/markdown.js';
+import { backlinksFor, renderMarkdown, resolveLink, resolveRelativeLink, wikiTargets } from '../src/markdown.js';
 import { MAX_FILE_BYTES, VaultRegistry } from '../src/vault.js';
 
 const cleanup: (() => void)[] = [];
@@ -27,6 +29,124 @@ test('configuration defaults and validation', () => {
   assert.throws(() => createConfig({ vaults: { '../escape': { path: '/tmp' } } }));
   assert.throws(() => createConfig({ search: { results_per_page: 0 } }));
   assert.throws(() => createConfig({ vaults: { x: { path: 2 } } }));
+});
+
+test('scans reuse unchanged documents and refresh links and search after external edits and removal', () => {
+  const { registry, project } = fixture();
+  writeFileSync(join(project, 'docs/a.md'), '# A\n[[b]]');
+  writeFileSync(join(project, 'docs/b.md'), '# B\nOriginal');
+  const first = registry.scan('project');
+  const second = registry.scan('project');
+  assert.equal(first, second);
+  assert.equal(backlinksFor(first.documents, 'coral://vault/project/docs/b.md').length, 1);
+  assert.equal(registry.search('Original', 'project').total, 1);
+  writeFileSync(join(project, 'docs/a.md'), '# A\nNo outgoing link');
+  writeFileSync(join(project, 'docs/b.md'), '# B\nReplaced');
+  const changed = registry.scan('project');
+  assert.notEqual(changed, first);
+  assert.equal(backlinksFor(changed.documents, 'coral://vault/project/docs/b.md').length, 0);
+  assert.equal(registry.search('Original', 'project').total, 0);
+  assert.equal(registry.search('Replaced', 'project').total, 1);
+  rmSync(join(project, 'docs/b.md'));
+  assert.equal(registry.search('Replaced', 'project').total, 0);
+});
+
+test('saving detects writes during backup and never overwrites a concurrently recreated file', () => {
+  const { registry, root } = fixture();
+  const doc = registry.create('default', 'Concurrent', 'Original');
+  const target = join(root, doc.relative);
+  const rename = fs.renameSync;
+  for (const phase of ['before', 'after']) {
+    writeFileSync(target, doc.raw);
+    fs.renameSync = ((from, to) => {
+      if (String(from) === target && phase === 'before') writeFileSync(target, 'External edit before backup');
+      rename(from, to);
+      if (String(from) === target && phase === 'after') writeFileSync(target, 'External replacement');
+    }) as typeof fs.renameSync;
+    syncBuiltinESMExports();
+    try {
+      assert.throws(() => registry.update(doc.uri, 'Web edit', doc.version), (error: unknown) => error instanceof AppError && error.status === 409);
+      assert.equal(readFileSync(target, 'utf8'), phase === 'before' ? 'External edit before backup' : 'External replacement');
+    } finally { fs.renameSync = rename; syncBuiltinESMExports(); }
+  }
+  writeFileSync(target, doc.raw);
+  const updated = registry.update(doc.uri, 'Successful edit', doc.version);
+  assert.equal(updated.body, 'Successful edit');
+  assert.ok(readdirSync(join(root, '.coral-backups')).length >= 3);
+  assert.equal(registry.scan('default').documents.length, 1);
+  const descriptor = fs.openSync(target, 'r+');
+  try {
+    registry.update(doc.uri, 'Next edit', updated.version);
+    fs.writeSync(descriptor, 'Late write through an existing Obsidian descriptor');
+    const retained = readdirSync(join(root, '.coral-backups')).map(batch => readFileSync(join(root, '.coral-backups', batch, doc.relative), 'utf8'));
+    assert.ok(retained.some(content => content.includes('Late write through an existing Obsidian descriptor')));
+    assert.equal(registry.document(doc.uri).body, 'Next edit');
+  } finally { fs.closeSync(descriptor); }
+});
+
+test('web Git commits preserve unrelated staged changes', () => {
+  const { registry, root } = fixture();
+  registry.create('default', 'First', 'One');
+  const gitRoot = registry.config.data_dir;
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: gitRoot, encoding: 'utf8' }).trim();
+  writeFileSync(join(root, 'unrelated.md'), 'User staged work');
+  git('add', 'wiki/unrelated.md');
+  const doc = registry.create('default', 'Second', 'Two');
+  assert.deepEqual(git('show', '--pretty=', '--name-only', 'HEAD').split('\n'), ['wiki/Second.md']);
+  assert.equal(git('diff', '--cached', '--name-only'), 'wiki/unrelated.md');
+  registry.delete(doc.uri, doc.version);
+  assert.equal(git('diff', '--cached', '--name-only'), 'wiki/unrelated.md');
+});
+
+test('corrupt knowledge base trash states are isolated, preserved and keep affected Vaults hidden', () => {
+  const { registry } = fixture();
+  const vault = registry.createVault('Damaged', 'damaged');
+  const stateRoot = join(registry.config.data_dir, '.coral/vault-trash');
+  mkdirSync(join(stateRoot, vault.id), { recursive: true });
+  writeFileSync(join(stateRoot, vault.id, 'state.json'), '{');
+  assert.ok(!registry.listVaults().vaults.some(item => item.id === vault.id));
+  assert.equal(registry.listTrash().skipped, 1);
+  assert.equal(registry.listTrash(vault.id).skipped, 1);
+  const listing = registry.listTrash();
+  registry.emptyTrash(undefined, listing.version);
+  assert.equal(readFileSync(join(stateRoot, vault.id, 'state.json'), 'utf8'), '{');
+  const restarted = new VaultRegistry(registry.config);
+  try { assert.equal(restarted.listTrash().skipped, 1); }
+  finally { restarted.close(); }
+});
+
+test('Markdown relative links prefer the current directory while Wiki links retain Vault path semantics', () => {
+  const { registry, project } = fixture();
+  writeFileSync(join(project, 'design.md'), '# Root');
+  writeFileSync(join(project, 'docs/design.md'), '# Local');
+  writeFileSync(join(project, 'docs/current.md'), '# Current');
+  const docs = registry.scan('project').documents;
+  const current = docs.find(doc => doc.relative === 'docs/current.md')!;
+  assert.equal(resolveRelativeLink('design.md', docs, current)?.relative, 'docs/design.md');
+  assert.equal(resolveRelativeLink('../design.md', docs, current)?.relative, 'design.md');
+  assert.equal(resolveRelativeLink('../../design.md', docs, current), undefined);
+  assert.equal(resolveLink('design', docs, current)?.relative, 'design.md');
+  const rendered = renderMarkdown('[Local](design.md) [Root](../design.md)', docs, current);
+  assert.ok(rendered.includes(encodeURIComponent('coral://vault/project/docs/design.md')));
+  assert.ok(rendered.includes(encodeURIComponent('coral://vault/project/design.md')));
+});
+
+test('empty folders support nested parents and reject collisions, traversal and symlinks', () => {
+  const { registry, project, directory } = fixture();
+  registry.createDirectory('project', 'docs', '  设计资料  ');
+  assert.deepEqual(readdirSync(join(project, 'docs/设计资料')), []);
+  assert.ok(registry.browse('project', 'docs').directories.some(folder => folder.name === '设计资料'));
+  assert.throws(() => registry.createDirectory('project', 'docs', '设计资料'), (error: unknown) => error instanceof AppError && error.status === 409);
+  writeFileSync(join(project, 'docs/existing.md'), 'keep');
+  assert.throws(() => registry.createDirectory('project', 'docs', 'existing.md'), AppError);
+  for (const name of ['', ' ', '.', '..', '.obsidian', '../outside', 'a/b', 'a\\b', 'bad\u0000', 'a'.repeat(256)]) {
+    assert.throws(() => registry.createDirectory('project', 'docs', name), AppError);
+  }
+  symlinkSync(directory, join(project, 'linked'));
+  assert.throws(() => registry.createDirectory('project', 'linked', 'outside'), AppError);
+  assert.throws(() => registry.createDirectory('project', '../outside', 'child'), AppError);
+  assert.throws(() => registry.createDirectory('project', 'missing', 'child'), AppError);
+  assert.equal(readFileSync(join(project, 'docs/existing.md'), 'utf8'), 'keep');
 });
 
 test('created Vaults persist and are discovered by an already running registry', () => {

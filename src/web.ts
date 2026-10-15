@@ -10,7 +10,7 @@ import { AppError, parseMarkdown, resourceUri, safeParts, titleFor } from './con
 import { createMcpServer } from './mcp.js';
 import { renderMarkdown, viewUrl } from './markdown.js';
 import { MAX_FILE_BYTES, VaultRegistry } from './vault.js';
-import { documentPage, editPage, editorStyleNonce, errorPage, escape, home, layout, lintPage, newPage, newVault, searchPage, trashPage, vaultCatalog } from './views.js';
+import { documentPage, editPage, editorStyleNonce, errorPage, escape, home, layout, lintPage, newDirectory, newPage, newVault, searchPage, trashPage, vaultCatalog } from './views.js';
 
 const base = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const text = (value: unknown, fallback = '') => typeof value === 'string' ? value : fallback;
@@ -71,6 +71,17 @@ export function createApp(config: Config) {
     } catch (error) {
       if (!(error instanceof AppError)) throw error;
       res.status(error.status).send(newVault(registry, { ...fields, error: error.message }));
+    }
+  });
+  app.get('/directories/new', (req, res) => res.send(newDirectory(registry, text(req.query.vault, 'default'), text(req.query.directory))));
+  app.post('/directories/new', (req, res) => {
+    const vaultId = text(req.body.vault, 'default'), directory = text(req.body.directory), name = text(req.body.name);
+    try {
+      registry.createDirectory(vaultId, directory, name);
+      res.redirect(303, '/?' + new URLSearchParams({ vault: vaultId, directory }));
+    } catch (error) {
+      if (!(error instanceof AppError)) throw error;
+      res.status(error.status).send(newDirectory(registry, vaultId, directory, { name, error: error.message }));
     }
   });
   app.get(['/new', '/pages/new'], (req, res) => res.send(newPage(registry, text(req.query.vault, 'default'), { title: text(req.query.title), directory: text(req.query.directory) })));

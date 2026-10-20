@@ -1,130 +1,144 @@
-# 🪸 coral
+# coral
 
-**知识如珊瑚，一点点分泌，终成礁石。**
+以 Obsidian 仓库为核心的自托管知识库。Markdown 文件是内容真源，Obsidian 用于日常书写，Web 用于浏览和编辑，agent 通过只读 MCP 查询。
 
-coral 是一个轻量级的、运行在 Linux 上的 **Web 版 LLM 知识库**：
+- 按文件夹管理知识，支持 Markdown 创建、上传、编辑、下载和回收站。
+- CodeMirror 编辑器提供语法高亮、实时预览、撤销重做和浏览器本地草稿。
+- 支持中文全文搜索、反向链接、Wiki 链接和结构检查。
+- Web 和 MCP 读取磁盘上的最新内容，可与 Obsidian 同时使用。
 
-- **导入笔记** → LLM 两步分析（先理解、再生成的 chain-of-thought）→ 自动生成结构化 wiki
-- **网页浏览**：Markdown 渲染、`[[wikilink]]` 跳转、frontmatter 元信息、断链标红
-- **网页编辑**：实时预览编辑器，直接写回磁盘上的 Markdown 文件
-- **中文全文搜索**：SQLite FTS5 + CJK 逐字切分（零外部依赖）
-- **结构检查（Lint）**：断链、孤儿页发现
+## 目录
 
-理念源自 [Karpathy 的 llm-wiki 模式](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)：
-知识**编译一次、持续维护**，而非每次查询重新推导。Markdown 文件是知识的唯一真源，
-数据库只是可随时重建的索引。
-
-## 快速开始
-
-```bash
-bash run.sh          # 创建 venv → 装依赖 → 启动，访问 http://127.0.0.1:8300
+```text
+coral/
+├── obsdian/              # 独立的 Obsidian 知识仓库
+│   ├── kernel/
+│   │   ├── .obsidian/
+│   │   ├── .coral-vault.json
+│   │   └── 任意文档.md
+│   └── tpu/
+├── .coral/               # 知识库回收状态
+├── sys/                  # 系统代码与运行环境
+│   ├── src/
+│   ├── static/
+│   ├── tests/
+│   ├── config.example.yaml
+│   ├── package.json
+│   └── run.sh
+├── README.md
+└── LICENSE
 ```
 
-Docker：
+仓库统一放在 `obsdian/<英文名>/`，目录拼写为 `obsdian`。在 Obsidian 中选择「打开文件夹作为仓库」，直接打开 `obsdian/kernel/` 等目录。
+
+网页创建仓库时，名称转为小写并直接作为目录名和 ID。名称须以英文字母开头，可包含字母、数字、连字符和下划线，最长 64 字符；同名仓库、目录或回收站中的名称不会被覆盖。文档标题、正文、子目录和简介可使用中文。
+
+直接放入 `obsdian/` 的英文名仓库会被自动识别，无需先在网页注册。`.coral-vault.json` 可保存稳定 ID 和简介；首次启动会创建 `obsdian/default/`，已删除的默认仓库不会在重启时重新创建。
+
+## 运行
+
+需要 **Node.js 22.13+** 和 npm，推荐 Node.js 22 或 24 LTS。项目根目录执行：
 
 ```bash
-docker build -t coral .
-docker run -d -p 8300:8300 -v /your/data:/data coral
+bash sys/run.sh
 ```
 
-依赖：Python 3.9+（仅 8 个 pip 包：fastapi / uvicorn / jinja2 / PyYAML / httpx /
-python-multipart / Markdown / Pygments）。无 Node.js、无前端构建、无外部 CDN。
+脚本会安装缺少的依赖、构建并启动服务。Web 地址为 http://127.0.0.1:8300 ，MCP 端点为 http://127.0.0.1:8300/mcp 。
 
-## 配置 LLM
-
-`config.yaml` 不入库（避免误提交密钥）；从 git clone 使用时先复制模板（也可以不复制，
-全部字段都有默认值）：
+手动运行或开发时，npm 命令均在 `sys/` 内执行：
 
 ```bash
-cp config.example.yaml config.yaml
+cd sys
+npm ci
+npm run build
+npm start
 ```
 
-编辑 `config.yaml`，把 `llm.base_url` 指向任意 OpenAI 兼容端点（vLLM / 内网推理服务）：
+开发模式使用 `npm run dev`。浏览器资源本地打包，无外部 CDN。全文索引保存在内存中，重启后自动重建；Node.js 22 可能打印内置 SQLite 的实验性 API 提示。
+
+系统共用一个 `VaultRegistry` 管理仓库发现、文件操作、回收站和搜索；Web 与 MCP 直接调用同一套逻辑。`markdown.ts` 处理渲染和链接，`views.ts` 生成页面，`client.ts` 与 `editor.ts` 处理浏览器交互。文档扫描缓存未变化的文件，磁盘文件始终是内容真源。
+
+## 配置
+
+默认无需配置。自定义时，将 `sys/config.example.yaml` 复制为 `sys/config.yaml`：
 
 ```yaml
-llm:
-  base_url: "http://127.0.0.1:8000/v1"
-  api_key: ""                  # 内网自部署端点通常留空
-  model: "qwen2.5-32b-instruct"
-  max_output_tokens: 8192
+server:
+  host: "127.0.0.1"
+  port: 8300
+data_dir: ".."
+search:
+  results_per_page: 20
+vaults: {}
 ```
 
-### 没有真实端点？用 mock 联调
+`data_dir` 默认指向项目根目录，仓库位于其 `obsdian/` 下，运行状态位于其 `.coral/` 下。配置中的相对路径基于配置文件所在目录，Web 和从其他目录启动的 MCP 使用相同的数据位置。外部仓库可通过 `vaults` 注册，配置项为 `name`、`description`、`path`。
+
+环境变量优先于配置：`CORAL_CONFIG` 指定配置文件，`CORAL_DATA_DIR` 指定数据根目录，`CORAL_HOST` 和 `CORAL_PORT` 指定监听地址及端口。
+
+## 内容与历史
+
+支持 YAML 属性、`[[文件]]`、`[[目录/文件|别名]]`、标题链接、标准 Markdown 相对链接和本地图片。文档没有固定分类，`index.md`、`log.md` 也是普通文档。跨目录同名文件应使用带目录的引用。
+
+网页写操作在每个仓库自己的 `.git/` 中留痕，仅提交本次涉及的路径。编辑时校验文档版本，保存前的原文件保留在 `.coral-backups/` 中；备份不参与查询，也不会自动清理。外部程序仍可能再次修改文件，备份用于保留可恢复内容。
+
+删除文件或文件夹会移入所属仓库的 `.trash/`；删除整个托管仓库会移入 `.coral/vault-trash/`。网页回收站支持恢复、彻底删除和清空，恢复遇到同名内容时拒绝覆盖。外部仓库只回收注册记录，不移动或删除原目录。
+
+文件回收站仅管理带有效 `.coral-trash.json` 的 Coral 记录，无法识别的内容会跳过并保留。彻底删除外部仓库注册后，其配置 ID 仍被保留；重新使用该 ID 前需更新配置。
+
+`.coral/` 保存知识库回收状态，不应随意删除。知识仓库、运行状态和本机配置由根目录 `.gitignore` 排除，各仓库独立管理版本历史。
+
+隐藏文件、隐藏目录和符号链接不对外暴露。Markdown 文件上限为 16 MiB，文本读取要求 UTF-8，下载保留原始字节。Obsidian 插件、Canvas、Dataview 和笔记嵌入不在网页执行。
+
+## MCP
+
+支持 Streamable HTTP 和 stdio，MCP 完全只读。HTTP 客户端连接：
+
+```json
+{
+  "mcpServers": {
+    "coral": {
+      "url": "http://127.0.0.1:8300/mcp"
+    }
+  }
+}
+```
+
+stdio 无需先启动 Web；构建后使用绝对路径启动，路径按实际安装位置填写：
+
+```json
+{
+  "mcpServers": {
+    "coral": {
+      "command": "node",
+      "args": ["/path/to/coral/sys/dist/stdio.js"]
+    }
+  }
+}
+```
+
+| 工具 | 参数 | 返回 |
+|---|---|---|
+| `list_vaults` | 无 | 仓库名称、简介、URI、状态、文档数量 |
+| `list_documents` | `vault_id`，可选 `directory/cursor/limit` | 文档 URI、相对路径、标题、版本和分页信息 |
+| `search_documents` | `query`，可选 `vault_id/cursor/limit` | 相关片段、行号、URI 和版本 |
+| `read_document` | `uri`，可选 `offset/max_chars/heading/version` | 原始 Markdown 分片、目录和分页信息 |
+| `download_document` | `uri` | 原始文件字节，以 Base64 blob 返回 |
+
+文档标识为 `coral://vault/<id>/<文件相对路径>`，不暴露服务器本机路径。例如 `coral://vault/kernel/docs/design.md`。读取大文档时，使用 `next_offset` 继续并传回 `version`，避免混合不同版本的内容；HTTP 下载端点为 `/download?uri=<编码后的URI>`。
+
+服务默认仅监听本机，目前没有账号或鉴权；跨机器访问应通过带鉴权的反向代理接入。
+
+## 验证
 
 ```bash
-python scripts/mock_llm.py 8400      # 启动假 LLM（含一个恶意路径块，验证安全闸门）
-# config.yaml: llm.base_url 改为 http://127.0.0.1:8400/v1
+cd sys
+npm run typecheck
+npm test
+npm run build
 ```
 
-## 使用流程
-
-核心交互只有两个入口，用户不需要理解 wiki 的技术概念：
-
-- **随手记**（首页）：打开就能写，一条就是一条——时间完全由系统后台记录（每条存成一个时间戳命名的文件），不暴露「天/文件」概念；空着点「写下来」也会记下这个时刻；每条可单独查看/编辑/删除/改名（时间不丢）。记录流页的「✨ AI 整理成笔记」把全部随手记交给 LLM 按主题聚合成笔记页（`wiki/notes/`），明显笔误可直接修订原文（仅限已存在条目，git 留痕）
-- **知识库**：两类内容
-  - **跟踪模板**：目前内置「求职跟踪」——每次投递一行（公司/岗位/投递时间），记录页一键推进状态（待投→已投→笔试→面试→offer/挂）并追加复盘；表格按「越接近面试时间越靠前」排序，已结束沉底。更多模板（读书、项目、健身…）规划中
-  - **整理的知识**：上传文档（`.md` / `.markdown` / `.txt`）后**自动**由 LLM 两步管线整理成实体/概念页面（无需任何勾选或跳转，知识库页显示整理进度，完成后自动刷新）；随时网页编辑，`[[链接]]` 穿行；断链在页面内直接标出，结构体检（`/lint`）保留为后台工具
-
-顶栏**搜索**覆盖全部：随手记、投递记录、wiki 页面、资料原文。
-
-## 数据布局
-
-```
-data/                # 自成 git 仓库：用户/LLM 每次写操作各成一个 commit
-├── journal/         # 随手记：一条一个文件（时间戳或改名命名，如 2026-09-12_16-34-45.md）
-├── jobs/            # 求职投递记录（每次投递一个文件，含状态时间线）
-├── sources/         # 你导入的原始笔记（LLM 只读）
-├── wiki/
-│   ├── entities/    # 人物、组织、产品、工具…
-│   ├── concepts/    # 理论、方法、技术…
-│   ├── sources/     # 每份来源的总结页
-│   ├── notes/       # 随手记聚合出的笔记页（type: note）
-│   ├── index.md     # 内容目录（应用自动维护）
-│   └── log.md       # 操作日志（应用自动维护）
-└── coral.db         # FTS 索引 + ingest 历史（可随时重建，不进版本库）
-```
-
-git 作者区分操作来源：`coral-user`（网页上的用户操作）/ `coral-llm`（ingest 管线）。
-git 不可用时静默降级为不留痕，功能不受影响。
-
-## Ingest 管线（两步 Chain-of-Thought）
-
-```
-源文件 → Step1 分析（注入现有 index.md，产出实体/概念/关联报告）
-       → Step2 生成（输出 ---FILE: wiki/path.md--- 文本块）
-       → 应用裁决落盘：
-           · 路径闸门：必须 wiki/ 下、无 ../、非绝对路径（防注入）
-           · union 字段（tags/related/sources）做并集
-           · locked 字段（type/title/created）保留旧值
-           · 单源页面重新 ingest → 直接替换（幂等）
-           · 多源页面 → 追加「来自《源》的补充」小节
-       → 重建 index.md、追加 log.md、更新 FTS
-```
-
-原则：**LLM 提议，应用裁决**。LLM 输出一律视为不可信输入，坏块只拒绝不放弃整个任务，
-所有告警显示在导入历史里。
-
-随手记整理（虚拟源「随手记」）走同一条管线，差别仅在：
-
-- 允许写 `wiki/notes/`（type: note），不生成来源总结页
-- 额外允许 `journal/` 修订块：只能改**已存在**的条目（纯文本、保持记录时间），
-  不存在即拒绝——LLM 不能凭空造/删随手记
-
-## 测试
-
-```bash
-source venv/bin/activate
-pip install pytest
-pytest tests/ -v
-```
-
-## 路线图（v2）
-
-- Chat RAG 问答（带引用）
-- 知识图谱可视化
-- PDF / Word 导入
-- 向量语义搜索
-- 长文档分块 ingest
+测试覆盖文件安全、Obsidian 互操作、中文搜索、版本校验、回收站、网页操作及 HTTP/stdio MCP。浏览器测试先运行 `npx playwright install chromium`，再运行 `npm run test:browser`。
 
 ## License
 

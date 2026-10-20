@@ -1,0 +1,19 @@
+# Vaults live beside sys/: ../obsdian/<english-name>/.
+# Open an individual Vault folder in Obsidian.
+server:
+  host: "127.0.0.1"
+  port: 8300
+
+data_dir: ".."
+
+search:
+  results_per_page: 20
+
+# Additional Obsidian Vaults, available through both Web and MCP.
+# Paths are configured only on the server; responses contain coral:// URIs.
+vaults: {}
+# vaults:
+#   project:
+#     name: "Project"
+#     description: "Project design and development notes"
+#     path: "/your/obsidian/project"

@@ -1,7 +1,14 @@
-__pycache__/
-*.pyc
-venv/
-data/
-config.yaml
-.pytest_cache/
-*.egg-info/
+# Knowledge vaults and local state
+/obsdian/
+/.coral/
+
+# Local system configuration
+/sys/config.yaml
+
+# Dependencies and build output
+/sys/node_modules/
+/sys/dist/
+
+# Test artifacts
+/sys/playwright-report/
+/sys/test-results/

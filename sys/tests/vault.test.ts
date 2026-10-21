@@ -209,6 +209,33 @@ test('created Vaults persist and are discovered by an already running registry',
   } finally { observer.close(); }
 });
 
+test('manually removed managed Vaults disappear from the catalog and search, including default after restart', () => {
+  const { registry, root } = fixture();
+  const managed = registry.createVault('manual');
+  registry.create('default', 'Default note', 'removedneedle');
+  registry.create(managed.id, 'Managed note', 'removedneedle');
+  assert.equal(registry.search('removedneedle').total, 2);
+
+  rmSync(root, { recursive: true });
+  rmSync(managed.root, { recursive: true });
+  assert.deepEqual(registry.listVaults().vaults.map(vault => vault.id), ['project']);
+  assert.equal(registry.search('removedneedle').total, 0);
+  assert.deepEqual(registry.search('removedneedle').unavailable_vaults, []);
+  assert.throws(() => registry.vault('default'), /知识库不存在/);
+  assert.throws(() => registry.vault(managed.id), /知识库不存在/);
+  assert.equal(registry.listTrash().vaults.length, 0);
+
+  const restarted = new VaultRegistry(registry.config);
+  try {
+    assert.ok(!existsSync(root));
+    assert.deepEqual(restarted.listVaults().vaults.map(vault => vault.id), ['project']);
+    mkdirSync(root);
+    writeFileSync(join(root, 'restored.md'), 'restoredneedle');
+    assert.equal(registry.listVaults().vaults.find(vault => vault.id === 'default')?.document_count, 1);
+    assert.equal(registry.search('restoredneedle').total, 1);
+  } finally { restarted.close(); }
+});
+
 test('English Vault names determine directories and default IDs, with duplicate and invalid names rejected', () => {
   const { registry } = fixture();
   const vault = registry.createVault(' Kernel ', '内核知识');

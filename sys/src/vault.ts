@@ -14,7 +14,7 @@ export interface Document {
   version: string; size: number; raw: string; body: string;
   metadata: Record<string, unknown>; warning?: string;
 }
-function publicDocument(doc: Document) {
+export function publicDocument(doc: Document) {
   return { uri: doc.uri, vault_id: doc.vaultId, title: doc.title, path: doc.relative,
     size_bytes: doc.size, version: doc.version, mime_type: 'text/markdown' };
 }
@@ -37,8 +37,8 @@ export class VaultRegistry {
   private indexed = new Map<string, string>();
 
   constructor(readonly config: Config) {
-    const root = join(config.data_dir, 'obsdian', 'default');
-    if (!existsSync(join(this.stateDirectory('default'), 'state.json'))) mkdirSync(join(root, '.obsidian'), { recursive: true });
+    const directory = join(config.data_dir, 'obsdian');
+    if (!existsSync(directory) && !existsSync(join(this.stateDirectory('default'), 'state.json'))) mkdirSync(join(directory, 'default', '.obsidian'), { recursive: true });
     this.refreshVaults();
     this.db = new DatabaseSync(':memory:');
     try {
@@ -55,7 +55,8 @@ export class VaultRegistry {
   // Each managed Vault publishes its own manifest, so independent MCP processes discover it.
   refreshVaults() {
     this.vaults.clear();
-    this.vaults.set('default', { id: 'default', name: 'default', description: 'coral 网页知识库', root: join(this.config.data_dir, 'obsdian', 'default') });
+    const root = join(this.config.data_dir, 'obsdian', 'default');
+    if (existsSync(root)) this.vaults.set('default', { id: 'default', name: 'default', description: 'coral 网页知识库', root });
     for (const [id, vault] of Object.entries(this.config.vaults)) this.vaults.set(id, { id, name: vault.name ?? id, description: vault.description, root: vault.path });
     const directory = join(this.config.data_dir, 'obsdian');
     for (const entry of existsSync(directory) ? readdirSync(directory, { withFileTypes: true }) : []) {

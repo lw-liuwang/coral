@@ -1,7 +1,7 @@
-import { createIcons, Library, Search, FilePlus, FolderPlus, Upload, Save, ArrowLeft, Pencil, Download, Trash2, Copy, Folder, FileText, CornerLeftUp, ChevronLeft, ChevronRight, Check, Undo2, Redo2, Heading2, Bold, Italic, Link, List, ListTodo, Quote, Code, Maximize2, Ellipsis, ScanSearch, RotateCcw } from 'lucide';
+import { createIcons, Library, Search, FilePlus, FolderPlus, Upload, Save, ArrowLeft, Pencil, Download, Trash2, Copy, Folder, FileText, CornerLeftUp, ChevronLeft, ChevronRight, Check, Undo2, Redo2, Heading2, Bold, Italic, Link, List, ListTodo, Quote, Code, Maximize2, Ellipsis, ScanSearch, RotateCcw, RefreshCw } from 'lucide';
 import { mountEditor } from './editor.js';
 
-const icons = { Library, Search, FilePlus, FolderPlus, Upload, Save, ArrowLeft, Pencil, Download, Trash2, Copy, Folder, FileText, CornerLeftUp, ChevronLeft, ChevronRight, Check, Undo2, Redo2, Heading2, Bold, Italic, Link, List, ListTodo, Quote, Code, Maximize2, Ellipsis, ScanSearch, RotateCcw };
+const icons = { Library, Search, FilePlus, FolderPlus, Upload, Save, ArrowLeft, Pencil, Download, Trash2, Copy, Folder, FileText, CornerLeftUp, ChevronLeft, ChevronRight, Check, Undo2, Redo2, Heading2, Bold, Italic, Link, List, ListTodo, Quote, Code, Maximize2, Ellipsis, ScanSearch, RotateCcw, RefreshCw };
 createIcons({ icons });
 
 document.querySelectorAll<HTMLDetailsElement>('.tools-menu').forEach(menu => {

@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "A Markdown knowledge base, Obsidian Vault browser and read-only MCP server",
+  "description": "A Markdown knowledge base, Obsidian Vault browser and read-write MCP server",
   "engines": {
     "node": ">=22.13.0"
   },

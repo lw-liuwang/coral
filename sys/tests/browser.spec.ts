@@ -5,9 +5,13 @@ import { tmpdir } from 'node:os';
 import { createConfig } from '../src/config.js';
 import { createApp } from '../src/web.js';
 
-const test = base.extend<{ applicationUrl: string }>({
-  applicationUrl: async ({}, use) => {
+const test = base.extend<{ applicationDirectory: string; applicationUrl: string }>({
+  applicationDirectory: async ({}, use) => {
     const directory = mkdtempSync(join(tmpdir(), 'coral-browser-'));
+    try { await use(directory); }
+    finally { rmSync(directory, { recursive: true, force: true }); }
+  },
+  applicationUrl: async ({ applicationDirectory: directory }, use) => {
     const application = createApp(createConfig({ data_dir: directory }));
     application.registry.create('default', '项目设计', '# 数据模型\n\nMarkdown 是知识库的唯一内容真源。\n\n## 查询接口\n\n参见 [[开发记录]]。\n\n```typescript\nconst uri = "coral://vault/project/docs/design.md";\n```');
     application.registry.create('default', '开发记录', '# 迭代记录\n\n完成知识库查询与文件下载。');
@@ -21,10 +25,38 @@ const test = base.extend<{ applicationUrl: string }>({
     finally {
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
       application.close();
-      rmSync(directory, { recursive: true, force: true });
     }
   },
 });
+
+for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+  test(`refresh catalog after manual Vault changes at ${viewport.width}px`, async ({ page, applicationUrl, applicationDirectory }, testInfo) => {
+    await page.setViewportSize(viewport);
+    const created = await page.request.post(applicationUrl + '/vaults/new', { form: { name: 'manual' }, maxRedirects: 0 });
+    expect(created.status()).toBe(303);
+    await page.goto(applicationUrl);
+    const refresh = page.getByRole('link', { name: '刷新知识库', exact: true });
+    await expect(refresh.locator('svg.lucide-refresh-cw')).toBeVisible();
+    await expect(page.getByRole('link', { name: 'default', exact: true })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'manual', exact: true })).toBeVisible();
+
+    rmSync(join(applicationDirectory, 'obsdian', 'default'), { recursive: true });
+    rmSync(join(applicationDirectory, 'obsdian', 'manual'), { recursive: true });
+    await refresh.click();
+    await expect(page.getByRole('heading', { level: 1 })).toContainText('0 个');
+    await expect(page.locator('.vault-list li')).toHaveCount(0);
+    await expect(page.getByText('暂不可用', { exact: true })).toHaveCount(0);
+
+    const restored = join(applicationDirectory, 'obsdian', 'restored');
+    mkdirSync(restored);
+    writeFileSync(join(restored, 'note.md'), '# Restored');
+    await refresh.click();
+    await expect(page.getByRole('link', { name: 'restored', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1 })).toContainText('1 个');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+    await page.screenshot({ path: testInfo.outputPath('refreshed-catalog.png'), fullPage: true });
+  });
+}
 
 test('browse, search, edit preview, download and upload', async ({ page, applicationUrl }, testInfo) => {
   const errors: string[] = [];

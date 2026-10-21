@@ -1,6 +1,6 @@
 # coral
 
-以 Obsidian 仓库为核心的自托管知识库。Markdown 文件是内容真源，Obsidian 用于日常书写，Web 用于浏览和编辑，agent 通过只读 MCP 查询。
+以 Obsidian 仓库为核心的自托管知识库。Markdown 文件是内容真源，Obsidian 用于日常书写，Web 用于浏览和编辑，agent 通过 MCP 查询和管理知识。
 
 - 按文件夹管理知识，支持 Markdown 创建、上传、编辑、下载和回收站。
 - CodeMirror 编辑器提供语法高亮、实时预览、撤销重做和浏览器本地草稿。
@@ -25,6 +25,7 @@ coral/
 │   ├── config.example.yaml
 │   ├── package.json
 │   └── run.sh
+├── run.cmd              # Windows 一键安装依赖并启动
 ├── README.md
 └── LICENSE
 ```
@@ -33,11 +34,23 @@ coral/
 
 网页创建仓库时，名称转为小写并直接作为目录名和 ID。名称须以英文字母开头，可包含字母、数字、连字符和下划线，最长 64 字符；同名仓库、目录或回收站中的名称不会被覆盖。文档标题、正文、子目录和简介可使用中文。
 
-直接放入 `obsdian/` 的英文名仓库会被自动识别，无需先在网页注册。`.coral-vault.json` 可保存稳定 ID 和简介；首次启动会创建 `obsdian/default/`，已删除的默认仓库不会在重启时重新创建。
+直接放入 `obsdian/` 的英文名仓库会被自动识别，无需先在网页注册。`.coral-vault.json` 可保存稳定 ID 和简介；尚无 `obsdian/` 目录时，首次启动会创建 `obsdian/default/`。已有 `obsdian/` 目录时，不会重新创建手动删除的默认仓库。
+
+在磁盘上手动新增、删除或重命名仓库后，点击知识库列表右上角的刷新图标即可重新扫描；手动删除的托管仓库会从列表中移除，不进入 Coral 回收站。配置中注册的外部仓库路径不可访问时，仍显示「暂不可用」，可恢复路径或通过网页删除其注册记录。
 
 ## 运行
 
-需要 **Node.js 22.13+** 和 npm，推荐 Node.js 22 或 24 LTS。项目根目录执行：
+需要 **Node.js 22.13+** 和 npm，推荐 Node.js 22 或 24 LTS。建议同时安装 Git，供网页写操作保存版本历史。
+
+Windows 下，安装 Node.js 后双击项目根目录的 `run.cmd`，或在 PowerShell 中执行：
+
+```powershell
+.\run.cmd
+```
+
+脚本会检查 Node.js 版本，在缺少 `sys/node_modules/` 时执行 `npm ci`，然后构建并启动服务；运行期间保留终端窗口，按 `Ctrl+C` 停止。出错时窗口会保留错误信息。更新项目依赖后，可在 `sys/` 中执行 `npm.cmd ci` 重新安装。无需安装 Bash 或 WSL。
+
+Linux / macOS 下，在项目根目录执行：
 
 ```bash
 bash sys/run.sh
@@ -80,7 +93,7 @@ vaults: {}
 
 支持 YAML 属性、`[[文件]]`、`[[目录/文件|别名]]`、标题链接、标准 Markdown 相对链接和本地图片。文档没有固定分类，`index.md`、`log.md` 也是普通文档。跨目录同名文件应使用带目录的引用。
 
-网页写操作在每个仓库自己的 `.git/` 中留痕，仅提交本次涉及的路径。编辑时校验文档版本，保存前的原文件保留在 `.coral-backups/` 中；备份不参与查询，也不会自动清理。外部程序仍可能再次修改文件，备份用于保留可恢复内容。
+网页和 MCP 写操作在每个仓库自己的 `.git/` 中留痕，仅提交本次涉及的路径。编辑时校验文档版本，保存前的原文件保留在 `.coral-backups/` 中；备份不参与查询，也不会自动清理。外部程序仍可能再次修改文件，备份用于保留可恢复内容。
 
 删除文件或文件夹会移入所属仓库的 `.trash/`；删除整个托管仓库会移入 `.coral/vault-trash/`。网页回收站支持恢复、彻底删除和清空，恢复遇到同名内容时拒绝覆盖。外部仓库只回收注册记录，不移动或删除原目录。
 
@@ -92,7 +105,7 @@ vaults: {}
 
 ## MCP
 
-支持 Streamable HTTP 和 stdio，MCP 完全只读。HTTP 客户端连接：
+支持 Streamable HTTP 和 stdio，两种方式均支持读写。HTTP 客户端连接：
 
 ```json
 {
@@ -124,6 +137,21 @@ stdio 无需先启动 Web；构建后使用绝对路径启动，路径按实际�
 | `search_documents` | `query`，可选 `vault_id/cursor/limit` | 相关片段、行号、URI 和版本 |
 | `read_document` | `uri`，可选 `offset/max_chars/heading/version` | 原始 Markdown 分片、目录和分页信息 |
 | `download_document` | `uri` | 原始文件字节，以 Base64 blob 返回 |
+| `browse_directory` | `vault_id`，可选 `directory/cursor/limit` | 当前目录的文件夹和文档元信息，含目录版本、URI 和分页信息 |
+| `create_vault` | `name`，可选 `description` | 新知识库 ID、简介和 URI |
+| `delete_vault` | `vault_id/version` | 将知识库移入回收站；外部库仅回收注册 |
+| `create_directory` | `vault_id/name`，可选 `directory` | 新文件夹的相对路径和 URI |
+| `delete_directory` | `uri/version` | 将文件夹及其文档、附件移入回收站 |
+| `create_document` | `vault_id/title`，可选 `content/directory/filename` | 新文档 URI、版本和元信息；`filename` 是不含 `.md` 的文件名 |
+| `update_document` | `uri/content/version` | 更新后的文档 URI、版本和元信息 |
+| `delete_document` | `uri/version` | 将文档移入回收站 |
+| `list_trash` | 可选 `vault_id` | 文件、文件夹和知识库的回收记录及版本 |
+| `restore_trash` | `vault_id/entry_id/version` | 恢复回收的文件或文件夹，拒绝同名覆盖 |
+| `restore_vault` | `vault_id/version` | 恢复回收的知识库或外部注册 |
+
+`create_document.content` 和 `update_document.content` 均为 Markdown 全文，可包含 YAML 属性。创建时以 `title` 为标题，自动维护创建和更新日期，同名文件使用数字后缀；修改时保持原文件位置，省略 YAML 属性块则保留现有属性。修改大文档前须读取完整的所有分片，避免用局部正文覆盖全文。
+
+修改和删除必须传入最新 `version`：文档版本从 `read_document` 或 `list_documents` 获取，目录版本从 `browse_directory` 获取，知识库版本从 `list_vaults` 获取，恢复所需的回收版本从 `list_trash` 获取。版本冲突会拒绝操作，应重新读取后再修改。MCP 删除均进入回收站；彻底删除和清空回收站仍通过网页执行。
 
 文档标识为 `coral://vault/<id>/<文件相对路径>`，不暴露服务器本机路径。例如 `coral://vault/kernel/docs/design.md`。读取大文档时，使用 `next_offset` 继续并传回 `version`，避免混合不同版本的内容；HTTP 下载端点为 `/download?uri=<编码后的URI>`。
 

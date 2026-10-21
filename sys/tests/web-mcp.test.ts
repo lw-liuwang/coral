@@ -1,6 +1,6 @@
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -29,6 +29,12 @@ async function fixture() {
   return { ...application, base, root, project, raw };
 }
 const params = (data: Record<string, string>) => ({ method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(data), redirect: 'manual' as const });
+async function callMcp(client: Client, name: string, args: Record<string, unknown> = {}) {
+  const response = await client.callTool({ name, arguments: args });
+  assert.ok(!response.isError, JSON.stringify(response));
+  assert.ok(response.structuredContent);
+  return response.structuredContent;
+}
 
 test('cyclic YAML properties render safely and corrupt Vault trash states do not break other pages', async () => {
   const { base, project, registry } = await fixture();
@@ -57,6 +63,29 @@ test('Web app exposes only the knowledge base and supports multiple Vaults', asy
   assert.equal((await fetch(base + '/pages/new', params({}))).status, 404);
   const project = await (await fetch(base + '/?vault=project&directory=docs')).text();
   assert.ok(project.includes('Design'));
+});
+
+test('catalog and API rescan manually removed Vaults and retain unavailable external registrations', async () => {
+  const { base, registry, project } = await fixture();
+  const managed = registry.createVault('manual');
+  const defaultRoot = registry.vault('default').root;
+  const initial = await (await fetch(base)).text();
+  assert.ok(initial.includes('title="刷新知识库"'));
+  assert.ok(initial.includes('href="/?vault=default"'));
+  assert.ok(initial.includes('href="/?vault=manual"'));
+
+  rmSync(defaultRoot, { recursive: true });
+  rmSync(managed.root, { recursive: true });
+  rmSync(project, { recursive: true });
+  const refreshed = await (await fetch(base)).text();
+  assert.ok(!refreshed.includes('coral://vault/default/'));
+  assert.ok(!refreshed.includes('coral://vault/manual/'));
+  assert.ok(refreshed.includes('coral://vault/project/') && refreshed.includes('暂不可用'));
+  const listing = await (await fetch(base + '/api/vaults')).json();
+  assert.deepEqual(listing.vaults.map((vault: { id: string }) => vault.id), ['project']);
+  assert.equal(listing.vaults[0].available, false);
+  assert.equal((await fetch(base + '/?vault=default')).status, 404);
+  assert.equal((await fetch(base + '/?vault=manual')).status, 404);
 });
 
 test('manual create, edit, conflict, search and delete over HTTP', async () => {
@@ -277,8 +306,18 @@ test('MCP Streamable HTTP handshake, tools, resources, search, read and download
   await client.connect(new StreamableHTTPClientTransport(new URL(base + '/mcp')));
   cleanup.push(() => client.close());
   const listed = await client.listTools();
-  assert.deepEqual(listed.tools.map(tool => tool.name).sort(), ['download_document', 'list_documents', 'list_vaults', 'read_document', 'search_documents']);
-  assert.ok(listed.tools.every(tool => tool.annotations?.readOnlyHint));
+  const readTools = ['browse_directory', 'download_document', 'list_documents', 'list_trash', 'list_vaults', 'read_document', 'search_documents'];
+  const writeTools = ['create_directory', 'create_document', 'create_vault', 'delete_directory', 'delete_document', 'delete_vault', 'restore_trash', 'restore_vault', 'update_document'];
+  assert.deepEqual(listed.tools.map(tool => tool.name).sort(), [...readTools, ...writeTools].sort());
+  for (const tool of listed.tools) {
+    assert.equal(tool.annotations?.readOnlyHint, readTools.includes(tool.name));
+    assert.equal(tool.annotations?.destructiveHint, tool.name.startsWith('delete_') || tool.name === 'update_document');
+    assert.equal(tool.annotations?.openWorldHint, false);
+    if (writeTools.includes(tool.name)) assert.equal(tool.annotations?.idempotentHint, false);
+  }
+  for (const name of ['update_document', 'delete_document', 'delete_directory', 'delete_vault', 'restore_trash', 'restore_vault']) {
+    assert.ok(listed.tools.find(tool => tool.name === name)!.inputSchema.required?.includes('version'));
+  }
   const vaults = await client.callTool({ name: 'list_vaults', arguments: {} });
   assert.ok(!vaults.isError);
   assert.ok(!JSON.stringify(vaults).includes(root));
@@ -308,8 +347,160 @@ test('MCP Streamable HTTP handshake, tools, resources, search, read and download
   assert.equal((await fetch(base + '/mcp')).status, 405);
 });
 
-test('MCP stdio supports an actual agent subprocess without stdout contamination', async () => {
-  const { root, project } = await fixture();
+test('MCP document writes preserve metadata, reject unsafe and stale edits, and recycle and restore files', async () => {
+  const { base, root, project, registry } = await fixture();
+  const client = new Client({ name: 'mcp-writing-agent', version: '1' });
+  await client.connect(new StreamableHTTPClientTransport(new URL(base + '/mcp')));
+  cleanup.push(() => client.close());
+  const args = { vault_id: 'project', title: 'Agent note', directory: '新建/docs', filename: 'note',
+    content: '---\ntags: [draft]\ncustom:\n  score: 2\n---\n# Original\ncreatedneedle' };
+  const created = await callMcp(client, 'create_document', args);
+  assert.equal(created.uri, 'coral://vault/project/' + encodeURIComponent('新建') + '/docs/note.md');
+  assert.ok(!JSON.stringify(created).includes(root));
+  const uri = String(created.uri);
+  const target = join(project, '新建/docs/note.md');
+  const original = registry.document(uri);
+  assert.deepEqual(original.metadata.tags, ['draft']);
+  assert.deepEqual(original.metadata.custom, { score: 2 });
+  assert.equal(original.metadata.title, 'Agent note');
+  const collision = await callMcp(client, 'create_document', args);
+  assert.notEqual(collision.uri, uri);
+  assert.equal(readFileSync(target, 'utf8'), original.raw);
+
+  for (const name of ['update_document', 'delete_document']) {
+    const missingVersion = await client.callTool({ name, arguments: { uri, content: 'No version' } });
+    assert.equal(missingVersion.isError, true);
+  }
+  for (const invalid of [
+    { ...args, directory: '../outside' },
+    { ...args, directory: '.hidden' },
+    { ...args, vault_id: '../outside' },
+    { ...args, content: '---\ntags: [\n---\nBroken YAML' },
+  ]) {
+    const denied = await client.callTool({ name: 'create_document', arguments: invalid });
+    assert.equal(denied.isError, true);
+    assert.ok(!JSON.stringify(denied).includes(root));
+  }
+  for (const unsafeUri of ['coral://vault/project/../outside.md', target]) {
+    const denied = await client.callTool({ name: 'update_document', arguments: { uri: unsafeUri, version: created.version, content: 'Escape attempt' } });
+    assert.equal(denied.isError, true);
+    assert.ok(!JSON.stringify(denied).includes(root));
+  }
+  assert.equal(readFileSync(target, 'utf8'), original.raw);
+
+  writeFileSync(target, '# External edit\nDo not overwrite');
+  for (const name of ['update_document', 'delete_document']) {
+    const stale = await client.callTool({ name, arguments: { uri, version: created.version, content: 'Stale edit' } });
+    assert.equal(stale.isError, true);
+  }
+  assert.equal(readFileSync(target, 'utf8'), '# External edit\nDo not overwrite');
+  const latest = await callMcp(client, 'read_document', { uri });
+  const updated = await callMcp(client, 'update_document', { uri, version: latest.version,
+    content: '---\ntitle: Updated\ntags: [published]\n---\n# Updated\nupdatedneedle' });
+  assert.equal(updated.uri, uri);
+  assert.notEqual(updated.version, latest.version);
+  assert.equal(registry.document(uri).body, '# Updated\nupdatedneedle');
+  assert.deepEqual(registry.document(uri).metadata.tags, ['published']);
+  assert.ok(!Object.hasOwn(registry.document(uri).metadata, 'custom'));
+  const backups = readdirSync(join(project, '.coral-backups'));
+  assert.ok(backups.some(batch => readFileSync(join(project, '.coral-backups', batch, 'note.md'), 'utf8') === '# External edit\nDo not overwrite'));
+  assert.ok((await (await fetch(base + '/document?' + new URLSearchParams({ uri }))).text()).includes('updatedneedle'));
+  const found = await callMcp(client, 'search_documents', { query: 'updatedneedle' });
+  assert.equal(found.total, 1);
+
+  const malformed = await client.callTool({ name: 'update_document', arguments: { uri, version: updated.version, content: '---\ntags: [\n---\nBroken YAML' } });
+  assert.equal(malformed.isError, true);
+  assert.equal(registry.document(uri).version, updated.version);
+  const deleted = await callMcp(client, 'delete_document', { uri, version: updated.version });
+  assert.equal(deleted.trashed, true);
+  assert.throws(() => registry.document(uri));
+  const trash = await callMcp(client, 'list_trash', { vault_id: 'project' });
+  const entry = (trash.items as { id: string; uri: string; version: string }[]).find(item => item.uri === uri)!;
+  assert.ok(entry);
+  const staleRestore = await client.callTool({ name: 'restore_trash', arguments: { vault_id: 'project', entry_id: entry.id, version: 'stale' } });
+  assert.equal(staleRestore.isError, true);
+  writeFileSync(target, 'Existing replacement');
+  const conflict = await client.callTool({ name: 'restore_trash', arguments: { vault_id: 'project', entry_id: entry.id, version: entry.version } });
+  assert.equal(conflict.isError, true);
+  assert.equal(readFileSync(target, 'utf8'), 'Existing replacement');
+  rmSync(target);
+  await callMcp(client, 'restore_trash', { vault_id: 'project', entry_id: entry.id, version: entry.version });
+  assert.equal(registry.document(uri).version, updated.version);
+});
+
+test('MCP manages Vaults and folders with versioned recycling and preserves external source files', async () => {
+  const { base, registry, project, raw, root } = await fixture();
+  const client = new Client({ name: 'mcp-vault-agent', version: '1' });
+  await client.connect(new StreamableHTTPClientTransport(new URL(base + '/mcp')));
+  cleanup.push(() => client.close());
+  const created = await callMcp(client, 'create_vault', { name: ' Agent-Notes ', description: 'Agent workspace' });
+  assert.equal(created.vault_id, 'agent-notes');
+  assert.ok(!JSON.stringify(created).includes(root));
+  const vault_id = String(created.vault_id);
+  const vault = registry.vault(vault_id);
+  const folder = await callMcp(client, 'create_directory', { vault_id, name: 'docs' });
+  assert.equal(folder.uri, 'coral://vault/agent-notes/docs');
+  await callMcp(client, 'create_directory', { vault_id, name: 'empty' });
+  for (const name of ['docs', '../outside']) {
+    const denied = await client.callTool({ name: 'create_directory', arguments: { vault_id, name } });
+    assert.equal(denied.isError, true);
+  }
+  const duplicate = await client.callTool({ name: 'create_vault', arguments: { name: vault_id } });
+  assert.equal(duplicate.isError, true);
+  const first = await callMcp(client, 'browse_directory', { vault_id, limit: 1 });
+  const second = await callMcp(client, 'browse_directory', { vault_id, limit: 1, cursor: first.next_cursor });
+  const folders = [...first.entries as { uri: string; version: string }[], ...second.entries as { uri: string; version: string }[]];
+  assert.equal(first.total, 2);
+  assert.equal(first.next_cursor, 1);
+  assert.equal(second.next_cursor, null);
+  assert.equal(folders.length, 2);
+  const oldFolder = folders.find(entry => entry.uri === folder.uri)!;
+  const doc = await callMcp(client, 'create_document', { vault_id, directory: 'docs', title: 'Note', content: 'Folder contents' });
+  writeFileSync(join(vault.root, 'docs', 'attachment.bin'), Buffer.from([0, 255, 42]));
+  const stale = await client.callTool({ name: 'delete_directory', arguments: { uri: folder.uri, version: oldFolder.version } });
+  assert.equal(stale.isError, true);
+  const current = await callMcp(client, 'browse_directory', { vault_id });
+  const snapshot = (current.entries as { uri: string; version: string }[]).find(entry => entry.uri === folder.uri)!;
+  const inside = await callMcp(client, 'browse_directory', { vault_id, directory: 'docs' });
+  const document = (inside.entries as { uri: string; content?: string; raw?: string }[])[0];
+  assert.equal(document.uri, doc.uri);
+  assert.ok(!Object.hasOwn(document, 'content') && !Object.hasOwn(document, 'raw'));
+  assert.ok(!JSON.stringify(current).includes(root));
+  await callMcp(client, 'delete_directory', { uri: folder.uri, version: snapshot.version });
+  assert.throws(() => registry.document(String(doc.uri)));
+  let trash = await callMcp(client, 'list_trash', { vault_id });
+  const trashedFolder = (trash.items as { id: string; kind: string; version: string }[])[0];
+  assert.equal(trashedFolder.kind, 'directory');
+  await callMcp(client, 'restore_trash', { vault_id, entry_id: trashedFolder.id, version: trashedFolder.version });
+  assert.equal(registry.document(String(doc.uri)).body, 'Folder contents');
+  assert.deepEqual(readFileSync(join(vault.root, 'docs', 'attachment.bin')), Buffer.from([0, 255, 42]));
+
+  let listing = await callMcp(client, 'list_vaults');
+  const managed = (listing.vaults as { id: string; version: string }[]).find(item => item.id === vault_id)!;
+  const staleVault = await client.callTool({ name: 'delete_vault', arguments: { vault_id, version: 'stale' } });
+  assert.equal(staleVault.isError, true);
+  await callMcp(client, 'delete_vault', { vault_id, version: managed.version });
+  assert.throws(() => registry.vault(vault_id));
+  trash = await callMcp(client, 'list_trash', { vault_id });
+  const trashedVault = (trash.vaults as { id: string; version: string }[])[0];
+  const staleVaultRestore = await client.callTool({ name: 'restore_vault', arguments: { vault_id, version: 'stale' } });
+  assert.equal(staleVaultRestore.isError, true);
+  await callMcp(client, 'restore_vault', { vault_id, version: trashedVault.version });
+  assert.equal(registry.document(String(doc.uri)).body, 'Folder contents');
+
+  listing = await callMcp(client, 'list_vaults');
+  const external = (listing.vaults as { id: string; version: string }[]).find(item => item.id === 'project')!;
+  await callMcp(client, 'delete_vault', { vault_id: 'project', version: external.version });
+  assert.equal(readFileSync(join(project, 'docs/design.md'), 'utf8'), raw);
+  trash = await callMcp(client, 'list_trash', { vault_id: 'project' });
+  const registration = (trash.vaults as { version: string; external: boolean }[])[0];
+  assert.equal(registration.external, true);
+  await callMcp(client, 'restore_vault', { vault_id: 'project', version: registration.version });
+  assert.equal(registry.document('coral://vault/project/docs/design.md').raw, raw);
+});
+
+test('MCP stdio reads and writes through an actual agent subprocess without stdout contamination', async () => {
+  const { root, project, registry } = await fixture();
   const configPath = join(root, 'config.yaml');
   writeFileSync(configPath, JSON.stringify({ data_dir: './data', vaults: { project: { path: './project' } } }));
   const client = new Client({ name: 'stdio-test-agent', version: '1.0.0' });
@@ -321,4 +512,15 @@ test('MCP stdio supports an actual agent subprocess without stdout contamination
   assert.ok(JSON.stringify(response).includes('project'));
   const found = await client.callTool({ name: 'search_documents', arguments: { query: '索引', vault_id: 'project' } });
   assert.ok(JSON.stringify(found).includes('coral://vault/project/docs/design.md'));
+  const created = await callMcp(client, 'create_document', { vault_id: 'project', title: 'Stdio note', content: 'Written through stdio' });
+  assert.equal(registry.document(String(created.uri)).body, 'Written through stdio');
+  assert.ok(!JSON.stringify(created).includes(root));
+  const updated = await callMcp(client, 'update_document', { uri: created.uri, version: created.version, content: 'Updated through stdio' });
+  assert.equal(registry.document(String(created.uri)).body, 'Updated through stdio');
+  await callMcp(client, 'delete_document', { uri: created.uri, version: updated.version });
+  assert.throws(() => registry.document(String(created.uri)));
+  const trash = await callMcp(client, 'list_trash', { vault_id: 'project' });
+  const entry = (trash.items as { id: string; version: string }[])[0];
+  await callMcp(client, 'restore_trash', { vault_id: 'project', entry_id: entry.id, version: entry.version });
+  assert.equal(registry.document(String(created.uri)).body, 'Updated through stdio');
 });

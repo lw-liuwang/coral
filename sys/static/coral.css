@@ -86,29 +86,69 @@ form.inline { display: inline; }
 .meta dd { margin: 0; }
 
 /* 正文 */
-.md-body { max-width: 760px; }
-.md-body h1, .md-body h2, .md-body h3 { line-height: 1.3; }
-.md-body h1 { font-size: 1.5rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
-.md-body h2 { font-size: 1.25rem; margin-top: 1.8rem; }
+.md-body {
+  max-width: 720px; min-width: 0;
+  font-size: 16px; line-height: 1.95; letter-spacing: 0;
+}
+main:has(> article.md-body) { max-width: 804px; }
+main > article.md-body { margin: 2rem auto 0; }
+main:has(> article.md-body) > .page-head h1 { font-size: 1.15rem; line-height: 1.5; }
+.md-body > :first-child { margin-top: 0; }
+.md-body > :last-child { margin-bottom: 0; }
+.md-body p, .md-body ul, .md-body ol { margin: 1.1em 0; }
+.md-body > p:not(:has(> img)) { text-indent: 2em; }
+.md-body h1, .md-body h2, .md-body h3,
+.md-body h4, .md-body h5, .md-body h6 {
+  line-height: 1.45; font-weight: 650; scroll-margin-top: 6rem;
+  margin-bottom: 0.8em;
+}
+.md-body h1 { font-size: 28px; margin-top: 2em; }
+.md-body h2 { font-size: 22px; margin-top: 2.3em; }
+.md-body h3 { font-size: 18px; margin-top: 1.9em; }
+.md-body h4, .md-body h5, .md-body h6 { font-size: 16px; margin-top: 1.6em; }
+.md-body :is(h1, h2, h3, h4, h5, h6) + :is(p, ul, ol, pre, blockquote, table) { margin-top: 0; }
+.md-body ul, .md-body ol { padding-left: 1.65em; }
+.md-body li { padding-left: 0.2em; }
+.md-body li + li { margin-top: 0.45em; }
+.md-body li > :is(p, ul, ol) { margin-top: 0.5em; margin-bottom: 0.5em; }
+.md-body li::marker { color: #57606a; }
+.md-body a { text-decoration: underline; text-decoration-color: #c9aaa5; text-underline-offset: 0.2em; }
+.md-body a:hover { text-decoration-color: currentColor; }
+.md-body hr { border: 0; border-top: 1px solid var(--border); margin: 2.5em 0; }
 .md-body code {
   background: var(--code-bg); border-radius: 4px;
-  padding: 0.1em 0.35em; font-size: 0.88em;
+  padding: 0.12em 0.3em; font-size: 0.9em;
   font-family: ui-monospace, "SF Mono", Consolas, "Courier New", monospace;
 }
 .md-body pre {
-  background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
-  padding: 0.8rem 1rem; overflow-x: auto;
+  background: #f5f6f8; border: 1px solid #e2e5e9; border-radius: 6px;
+  margin: 1.4em 0; padding: 1rem 1.2rem; max-width: 100%; overflow-x: auto;
+  font-size: 14px; line-height: 1.75; tab-size: 4;
+  white-space: pre; overflow-wrap: normal; word-break: normal;
 }
-.md-body pre code { background: none; padding: 0; }
+.md-body pre code { background: none; padding: 0; font-size: inherit; line-height: inherit; overflow-wrap: normal; word-break: normal; }
 .md-body blockquote {
-  margin: 0.8rem 0; padding: 0.3rem 1rem;
-  border-left: 3px solid var(--accent); background: var(--card);
-  color: var(--muted);
+  margin: 1.4em 0; padding: 0.1em 1.1em;
+  border-left: 3px solid #b8c4cf; background: #f3f5f7;
+  color: #57606a;
 }
-.md-body table { border-collapse: collapse; margin: 1rem 0; }
-.md-body th, .md-body td { border: 1px solid var(--border); padding: 0.35rem 0.8rem; }
-.md-body th { background: var(--code-bg); }
-.md-body img { max-width: 100%; }
+.md-body blockquote > :first-child { margin-top: 0.65em; }
+.md-body blockquote > :last-child { margin-bottom: 0.65em; }
+.md-body table {
+  display: block; max-width: 100%; overflow-x: auto;
+  border-collapse: collapse; margin: 1.4em 0; font-size: 14px; line-height: 1.7;
+}
+.md-body th, .md-body td {
+  min-width: 6em; border: 1px solid #e2e5e9; padding: 0.65em 0.85em;
+  vertical-align: top;
+}
+.md-body th { background: #eef1f4; font-weight: 600; }
+.md-body tbody tr:nth-child(even) { background: #f5f6f8; }
+.md-body img { max-width: 100%; height: auto; vertical-align: middle; }
+.mermaid-diagram { min-width: 0; margin: 1rem 0; }
+.mermaid-frame { display: block; width: 100%; height: 0; border: 0; }
+.mermaid-diagram[data-mermaid-state="rendered"] > pre { display: none; }
+.mermaid-error { color: #8a352e; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* 断链 */
 a.broken, .md-body a.broken {
@@ -194,6 +234,8 @@ mark { background: #f7e2a8; padding: 0 0.1em; border-radius: 3px; }
 
 .page-head h1, .page-link, .md-body, .meta dd { overflow-wrap: anywhere; }
 .breadcrumbs { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-bottom: 1rem; font-size: 0.88rem; color: var(--muted); overflow-wrap: anywhere; }
+.breadcrumbs > a, .breadcrumbs > [aria-current] { min-width: 0; }
+.breadcrumbs [aria-current="page"] { color: var(--fg); }
 .vault-list { list-style: none; padding: 0; margin: 0; }
 .vault-list li { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.8rem; padding: 1rem 0; border-bottom: 1px solid var(--border); }
 .vault-list li > div { min-width: 0; overflow-wrap: anywhere; }
@@ -228,6 +270,7 @@ mark { background: #f7e2a8; padding: 0 0.1em; border-radius: 3px; }
 .file-entry { display: flex; flex: 1; align-items: center; flex-wrap: wrap; gap: 0.4rem 1rem; min-width: 0; overflow-wrap: anywhere; }
 .file-entry > .muted { margin-left: auto; }
 .row-delete { flex: 0 0 34px; margin: 0; }
+.row-actions { display: flex; align-items: center; flex-shrink: 0; gap: 2px; }
 .document-fields label { font-size: 0.85rem; color: var(--muted); }
 .document-fields input, .document-fields select { display: block; width: 100%; height: 40px; border: 1px solid var(--border); border-radius: 4px; padding: 0.4rem 0.7rem; background: white; color: var(--fg); font: inherit; }
 .document-fields input { font-size: 1.1rem; }
@@ -251,11 +294,11 @@ mark { background: #f7e2a8; padding: 0 0.1em; border-radius: 3px; }
 .writing-surface .cm-activeLine, .writing-surface .cm-activeLineGutter { background: #f1f6f9; }
 .writing-surface .cm-focused { outline: none; }
 .writing-surface .cm-selectionBackground, .writing-surface .cm-focused .cm-selectionBackground { background: #cde2ee; }
-.writing-surface .preview { min-width: 0; max-width: none; max-height: none; margin: 0; border: 0; border-left: 1px solid var(--border); border-radius: 0; padding: 22px 30px 80px; overflow: auto; overflow-wrap: anywhere; line-height: 1.85; }
+.writing-surface .preview { min-width: 0; max-width: none; max-height: none; margin: 0; border: 0; border-left: 1px solid var(--border); border-radius: 0; padding: 28px 30px 80px; overflow: auto; overflow-wrap: anywhere; }
 .writing-surface .preview > :first-child { margin-top: 0; }
 .writing-surface[data-mode="write"] .editor-grid, .writing-surface[data-mode="preview"] .editor-grid { grid-template-columns: minmax(0, 1fr); }
 .writing-surface[data-mode="write"] .preview, .writing-surface[data-mode="preview"] .source-pane { display: none; }
-.writing-surface[data-mode="preview"] .preview { border-left: 0; padding-left: max(24px, calc((100% - 780px) / 2)); padding-right: max(24px, calc((100% - 780px) / 2)); }
+.writing-surface[data-mode="preview"] .preview { border-left: 0; padding-left: max(24px, calc((100% - 720px) / 2)); padding-right: max(24px, calc((100% - 720px) / 2)); }
 .writing-status { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; border-top: 1px solid var(--border); padding: 0.4rem 0.8rem; color: var(--muted); font-size: 0.8rem; background: #fafbfc; }
 .draft-notice { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.6rem; padding: 0.65rem 0.8rem; color: #254c62; background: #eaf3f8; border-bottom: 1px solid #c7dce9; font-size: 0.9rem; }
 .writing-surface #save-error { margin: 0; border: 0; border-top: 1px solid #e8c8c4; border-radius: 0; }
@@ -265,6 +308,11 @@ mark { background: #f7e2a8; padding: 0 0.1em; border-radius: 3px; }
 .editor-focused .writing-surface .editor-grid { height: calc(100dvh - 160px); }
 .editor-focused .document-fields { display: none; }
 @media (max-width: 800px) {
+  main:has(> article.md-body) { padding: 1.2rem 1.2rem 3rem; }
+  main > article.md-body { margin-top: 1.6rem; }
+  .md-body h1 { font-size: 25px; }
+  .md-body h2 { font-size: 21px; }
+  .md-body pre { padding: 0.85rem 1rem; }
   .file-entry { flex-direction: column; align-items: flex-start; gap: 0.2rem; }
   .file-entry > .muted { margin-left: 0; }
   .file-updated { display: none; }

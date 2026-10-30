@@ -1,7 +1,8 @@
-import { createIcons, Library, Search, FilePlus, FolderPlus, Upload, Save, ArrowLeft, Pencil, Download, Trash2, Copy, Folder, FileText, CornerLeftUp, ChevronLeft, ChevronRight, Check, Undo2, Redo2, Heading2, Bold, Italic, Link, List, ListTodo, Quote, Code, Maximize2, Ellipsis, ScanSearch, RotateCcw, RefreshCw } from 'lucide';
+import { createIcons, Library, Search, FilePlus, FolderPlus, Upload, Save, ArrowLeft, Pencil, Download, Trash2, Copy, Folder, FileText, CornerLeftUp, ChevronLeft, ChevronRight, Check, Undo2, Redo2, Heading2, Bold, Italic, Link, List, ListTodo, Quote, Code, Maximize2, Ellipsis, ScanSearch, RotateCcw, RefreshCw, TextCursorInput } from 'lucide';
 import { mountEditor } from './editor.js';
+import { renderDiagrams } from './diagrams.js';
 
-const icons = { Library, Search, FilePlus, FolderPlus, Upload, Save, ArrowLeft, Pencil, Download, Trash2, Copy, Folder, FileText, CornerLeftUp, ChevronLeft, ChevronRight, Check, Undo2, Redo2, Heading2, Bold, Italic, Link, List, ListTodo, Quote, Code, Maximize2, Ellipsis, ScanSearch, RotateCcw, RefreshCw };
+const icons = { Library, Search, FilePlus, FolderPlus, Upload, Save, ArrowLeft, Pencil, Download, Trash2, Copy, Folder, FileText, CornerLeftUp, ChevronLeft, ChevronRight, Check, Undo2, Redo2, Heading2, Bold, Italic, Link, List, ListTodo, Quote, Code, Maximize2, Ellipsis, ScanSearch, RotateCcw, RefreshCw, TextCursorInput };
 createIcons({ icons });
 
 document.querySelectorAll<HTMLDetailsElement>('.tools-menu').forEach(menu => {
@@ -17,12 +18,14 @@ document.querySelectorAll<HTMLFormElement>('form[data-confirm]').forEach(form =>
 }));
 document.querySelectorAll<HTMLButtonElement>('[data-copy]').forEach(button => button.addEventListener('click', async () => {
   try {
+    const originalTitle = button.title;
     await navigator.clipboard.writeText(button.dataset.copy ?? '');
     button.innerHTML = '<i data-lucide="check"></i>';
     button.title = '已复制';
     createIcons({ icons });
-    setTimeout(() => { button.innerHTML = '<i data-lucide="copy"></i>'; button.title = '复制资源 URI'; createIcons({ icons }); }, 1500);
+    setTimeout(() => { button.innerHTML = '<i data-lucide="copy"></i>'; button.title = originalTitle; createIcons({ icons }); }, 1500);
   } catch { button.title = '复制失败'; }
 }));
 
 mountEditor();
+renderDiagrams();

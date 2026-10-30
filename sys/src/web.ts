@@ -10,7 +10,7 @@ import { AppError, parseMarkdown, safeParts, titleFor } from './content.js';
 import { createMcpServer } from './mcp.js';
 import { renderMarkdown, viewUrl } from './markdown.js';
 import { MAX_FILE_BYTES, VaultRegistry } from './vault.js';
-import { documentPage, editPage, editorStyleNonce, errorPage, home, lintPage, newDirectory, newPage, newVault, searchPage, trashPage, vaultCatalog } from './views.js';
+import { documentPage, editPage, editorStyleNonce, errorPage, home, lintPage, newDirectory, newPage, newVault, renamePage, searchPage, trashPage, vaultCatalog } from './views.js';
 
 const base = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const text = (value: unknown, fallback = '') => typeof value === 'string' ? value : fallback;
@@ -35,6 +35,10 @@ export function createApp(config: Config) {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Content-Security-Policy', `default-src 'self'; script-src 'self'; style-src 'self' 'nonce-${editorStyleNonce}'; img-src 'self' https: http: data:; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'self'`);
     next();
+  });
+  app.get('/static/mermaid.html', (_req, res) => {
+    res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'self'; base-uri 'none'; form-action 'none'; sandbox allow-scripts");
+    res.sendFile(join(base, 'static/mermaid.html'));
   });
   app.use('/static', express.static(join(base, 'dist/public')));
   app.get('/static/highlight.css', (_req, res) => res.sendFile(join(base, 'node_modules/highlight.js/styles/github.css')));
@@ -120,6 +124,23 @@ export function createApp(config: Config) {
     res.redirect(303, '/?' + new URLSearchParams({ vault: vaultId, upload: String(saved), rejected: String(rejected), directory }));
   });
   app.get('/document', (req, res) => res.send(documentPage(registry, registry.document(uri(req)))));
+  app.get('/rename', (req, res) => res.send(renamePage(registry, registry.renameEntry(uri(req)), { from: text(req.query.from) })));
+  app.post('/rename', (req, res) => {
+    const entry = registry.renameEntry(uri(req));
+    const fields = { name: text(req.body.name), version: text(req.body.version), from: text(req.body.from) };
+    try {
+      const renamed = registry.rename(entry.uri, fields.name, fields.version);
+      const directory = fields.from === 'directory' && renamed.kind === 'directory' ? renamed.relative : renamed.relative.split('/').slice(0, -1).join('/');
+      const url = fields.from === 'document' && renamed.kind === 'document' ? viewUrl(renamed.uri)
+        : '/?' + new URLSearchParams({ vault: renamed.vaultId, directory });
+      if (req.get('accept') === 'application/json') { res.json({ ...renamed, url }); return; }
+      res.redirect(303, url);
+    } catch (error) {
+      if (!(error instanceof AppError)) throw error;
+      if (req.get('accept') === 'application/json') { res.status(error.status).json({ error: error.message }); return; }
+      res.status(error.status).send(renamePage(registry, entry, { ...fields, error: error.message }));
+    }
+  });
   app.get('/edit', (req, res) => res.send(editPage(registry, registry.document(uri(req)))));
   app.post('/edit', (req, res) => {
     if (!text(req.body.version)) throw new AppError('缺少文档版本，请重新打开编辑页');

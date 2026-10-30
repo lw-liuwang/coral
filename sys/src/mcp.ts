@@ -87,6 +87,15 @@ export function createMcpServer(registry: VaultRegistry) {
     registry.deleteDirectory(uri, version);
     return result({ uri, trashed: true });
   }));
+  for (const kind of ['document', 'directory'] as const) server.registerTool('rename_' + kind, {
+    description: `Rename a ${kind} within its current parent directory using its latest version from ${kind === 'document' ? 'read_document' : 'browse_directory'}. name is the complete new filename${kind === 'document' ? ', including .md or .markdown' : ''}. Preserves file contents and returns the new Coral URI; existing links are not rewritten.`,
+    inputSchema: { uri: uriSchema, name: z.string().trim().min(1).max(255), version: versionSchema }, annotations: writeAnnotations,
+  }, ({ uri, name, version }) => safe(() => {
+    if (registry.renameEntry(uri).kind !== kind) throw new AppError('资源类型不匹配');
+    const renamed = registry.rename(uri, name, version);
+    return result({ uri: renamed.uri, vault_id: renamed.vaultId, path: renamed.relative,
+      name: renamed.name, kind: renamed.kind, version: renamed.version });
+  }));
   server.registerTool('create_document', {
     description: 'Create a Markdown document with a title and optional YAML frontmatter in content. Missing parent directories are created. Optional filename is a filename stem without .md; otherwise title is used. Name collisions get numeric suffixes, never overwrite. Returns the actual URI and version.',
     inputSchema: { vault_id: vaultIdSchema, title: z.string().trim().min(1), content: contentSchema.default(''), directory: directorySchema, filename: z.string().min(1).max(160).optional() }, annotations: writeAnnotations,

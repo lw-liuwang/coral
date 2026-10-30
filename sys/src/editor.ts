@@ -6,6 +6,7 @@ import { yamlFrontmatter } from '@codemirror/lang-yaml';
 import { bracketMatching, defaultHighlightStyle, syntaxHighlighting, indentOnInput } from '@codemirror/language';
 import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { searchKeymap, highlightSelectionMatches } from '@codemirror/search';
+import { renderDiagrams } from './diagrams.js';
 
 interface Draft { content: string; title: string; directory: string; version: string; updated: number }
 
@@ -53,7 +54,10 @@ export function mountEditor() {
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ markdown: textarea!.value, vault, uri }) });
       const data = await response.json();
       if (request.signal.aborted) return;
-      if (response.ok) preview!.innerHTML = data.html;
+      if (response.ok) {
+        preview!.innerHTML = data.html;
+        renderDiagrams(preview!);
+      }
       else preview!.textContent = data.error ?? '预览暂不可用';
     } catch {
       if (!request.signal.aborted) preview!.textContent = '预览暂不可用';

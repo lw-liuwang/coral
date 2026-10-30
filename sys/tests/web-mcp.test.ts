@@ -51,6 +51,41 @@ test('cyclic YAML properties render safely and corrupt Vault trash states do not
   assert.equal((await fetch(base)).status, 200);
 });
 
+test('folder URIs and full breadcrumbs follow renames through Web and MCP', async () => {
+  const { base, registry, project, raw } = await fixture();
+  const root = await (await fetch(base + '/?vault=project')).text();
+  assert.match(root, /data-copy="coral:\/\/vault\/project\/docs"/);
+  const original = registry.renameEntry('coral://vault/project/docs/design.md');
+  const page = await (await fetch(base + '/document?' + new URLSearchParams({ uri: original.uri }))).text();
+  assert.match(page, /aria-label="当前位置"[^]*>docs<\/a>[^]*aria-current="page">design.md/);
+  const form = await (await fetch(base + '/rename?' + new URLSearchParams({ uri: original.uri }))).text();
+  assert.ok(form.includes('value="design.md"') && form.includes(`value="${original.version}"`));
+  const stale = await fetch(base + '/rename', params({ uri: original.uri, name: 'new.md', version: 'stale' }));
+  assert.equal(stale.status, 409);
+  assert.ok((await stale.text()).includes('value="new.md"'));
+  const renamed = await fetch(base + '/rename', params({ uri: original.uri, name: '新名字.md', version: original.version, from: 'document' }));
+  assert.equal(renamed.status, 303);
+  const newPage = await (await fetch(base + renamed.headers.get('location'))).text();
+  assert.ok(newPage.includes('aria-current="page">新名字.md'));
+  assert.equal((await fetch(base + '/document?' + new URLSearchParams({ uri: original.uri }))).status, 404);
+  assert.equal(readFileSync(join(project, 'docs/新名字.md'), 'utf8'), raw);
+
+  const client = new Client({ name: 'mcp-renaming-agent', version: '1' });
+  await client.connect(new StreamableHTTPClientTransport(new URL(base + '/mcp')));
+  cleanup.push(() => client.close());
+  const folder = registry.renameEntry('coral://vault/project/docs');
+  const moved = await callMcp(client, 'rename_directory', { uri: folder.uri, name: '资料', version: folder.version });
+  assert.equal(moved.uri, 'coral://vault/project/' + encodeURIComponent('资料'));
+  const doc = registry.browse('project', '资料').documents[0];
+  const file = await callMcp(client, 'rename_document', { uri: doc.uri, name: 'final.md', version: doc.version });
+  assert.equal(file.uri, 'coral://vault/project/' + encodeURIComponent('资料') + '/final.md');
+  assert.equal(registry.document(String(file.uri)).raw, raw);
+  assert.equal((await client.callTool({ name: 'rename_directory', arguments: { uri: file.uri, name: 'wrong', version: file.version } })).isError, true);
+  const folderPage = await (await fetch(base + '/?' + new URLSearchParams({ vault: 'project', directory: '资料' }))).text();
+  assert.ok(folderPage.includes('aria-current="page">资料'));
+  assert.ok(folderPage.includes(`data-copy="${moved.uri}"`));
+});
+
 test('Web app exposes only the knowledge base and supports multiple Vaults', async () => {
   const { base } = await fixture();
   const response = await fetch(base);
@@ -300,6 +335,22 @@ test('preview escapes HTML and local image assets render from the same Vault', a
   assert.equal(registry.scan('project').documents.length, 1);
 });
 
+test('Mermaid previews escape source and use an isolated renderer without weakening the main page CSP', async () => {
+  const { base } = await fixture();
+  const response = await fetch(base + '/api/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ vault: 'project', markdown: '```mermaid\nflowchart LR\nA["<script>alert(1)</script>"] --> B\n```' }) });
+  assert.equal(response.status, 200);
+  const data = await response.json();
+  assert.match(data.html, /data-mermaid/);
+  assert.ok(!data.html.includes('<script>'));
+  assert.ok(!response.headers.get('content-security-policy')!.includes('unsafe-inline'));
+  const renderer = await fetch(base + '/static/mermaid.html');
+  assert.equal(renderer.status, 200);
+  assert.match(renderer.headers.get('content-security-policy')!, /sandbox allow-scripts/);
+  assert.ok(!renderer.headers.get('content-security-policy')!.includes('allow-same-origin'));
+  assert.match(await renderer.text(), /src="\/static\/mermaid-frame.js"/);
+});
+
 test('MCP Streamable HTTP handshake, tools, resources, search, read and download', async () => {
   const { base, root, raw, project } = await fixture();
   const client = new Client({ name: 'coral-test-agent', version: '1.0.0' });
@@ -307,7 +358,7 @@ test('MCP Streamable HTTP handshake, tools, resources, search, read and download
   cleanup.push(() => client.close());
   const listed = await client.listTools();
   const readTools = ['browse_directory', 'download_document', 'list_documents', 'list_trash', 'list_vaults', 'read_document', 'search_documents'];
-  const writeTools = ['create_directory', 'create_document', 'create_vault', 'delete_directory', 'delete_document', 'delete_vault', 'restore_trash', 'restore_vault', 'update_document'];
+  const writeTools = ['create_directory', 'create_document', 'create_vault', 'delete_directory', 'delete_document', 'delete_vault', 'rename_directory', 'rename_document', 'restore_trash', 'restore_vault', 'update_document'];
   assert.deepEqual(listed.tools.map(tool => tool.name).sort(), [...readTools, ...writeTools].sort());
   for (const tool of listed.tools) {
     assert.equal(tool.annotations?.readOnlyHint, readTools.includes(tool.name));
@@ -315,7 +366,7 @@ test('MCP Streamable HTTP handshake, tools, resources, search, read and download
     assert.equal(tool.annotations?.openWorldHint, false);
     if (writeTools.includes(tool.name)) assert.equal(tool.annotations?.idempotentHint, false);
   }
-  for (const name of ['update_document', 'delete_document', 'delete_directory', 'delete_vault', 'restore_trash', 'restore_vault']) {
+  for (const name of ['update_document', 'delete_document', 'delete_directory', 'delete_vault', 'rename_document', 'rename_directory', 'restore_trash', 'restore_vault']) {
     assert.ok(listed.tools.find(tool => tool.name === name)!.inputSchema.required?.includes('version'));
   }
   const vaults = await client.callTool({ name: 'list_vaults', arguments: {} });

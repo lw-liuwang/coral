@@ -91,9 +91,11 @@ vaults: {}
 
 ## 内容与历史
 
-支持 YAML 属性、`[[文件]]`、`[[目录/文件|别名]]`、标题链接、标准 Markdown 相对链接和本地图片。文档没有固定分类，`index.md`、`log.md` 也是普通文档。跨目录同名文件应使用带目录的引用。
+支持 YAML 属性、`[[文件]]`、`[[目录/文件|别名]]`、标题链接、标准 Markdown 相对链接和本地图片。文档页和编辑预览支持以 `mermaid` 标记的代码块，图表渲染器本地打包、按需加载；语法错误时显示提示并保留源码。文档没有固定分类，`index.md`、`log.md` 也是普通文档。跨目录同名文件应使用带目录的引用。
 
 网页和 MCP 写操作在每个仓库自己的 `.git/` 中留痕，仅提交本次涉及的路径。编辑时校验文档版本，保存前的原文件保留在 `.coral-backups/` 中；备份不参与查询，也不会自动清理。外部程序仍可能再次修改文件，备份用于保留可恢复内容。
+
+目录页、文档页和编辑页显示完整的逐级路径，可点击目录返回。文件夹和文档均可复制 `coral://vault/<id>/<相对路径>` URI。网页列表、详情页和 MCP 支持在原父目录中重命名；文档需保留 `.md` 或 `.markdown` 扩展名。同名或版本冲突时拒绝操作，原始正文、YAML 属性和附件保留。重命名改变文件路径和 URI，不修改 YAML 中的标题，也不自动改写其他笔记中的链接。
 
 删除文件或文件夹会移入所属仓库的 `.trash/`；删除整个托管仓库会移入 `.coral/vault-trash/`。网页回收站支持恢复、彻底删除和清空，恢复遇到同名内容时拒绝覆盖。外部仓库只回收注册记录，不移动或删除原目录。
 
@@ -142,9 +144,11 @@ stdio 无需先启动 Web；构建后使用绝对路径启动，路径按实际�
 | `delete_vault` | `vault_id/version` | 将知识库移入回收站；外部库仅回收注册 |
 | `create_directory` | `vault_id/name`，可选 `directory` | 新文件夹的相对路径和 URI |
 | `delete_directory` | `uri/version` | 将文件夹及其文档、附件移入回收站 |
+| `rename_directory` | `uri/name/version` | 重命名文件夹，返回新路径、URI 和版本 |
 | `create_document` | `vault_id/title`，可选 `content/directory/filename` | 新文档 URI、版本和元信息；`filename` 是不含 `.md` 的文件名 |
 | `update_document` | `uri/content/version` | 更新后的文档 URI、版本和元信息 |
 | `delete_document` | `uri/version` | 将文档移入回收站 |
+| `rename_document` | `uri/name/version` | 重命名文档文件，`name` 包含 Markdown 扩展名，返回新路径和 URI |
 | `list_trash` | 可选 `vault_id` | 文件、文件夹和知识库的回收记录及版本 |
 | `restore_trash` | `vault_id/entry_id/version` | 恢复回收的文件或文件夹，拒绝同名覆盖 |
 | `restore_vault` | `vault_id/version` | 恢复回收的知识库或外部注册 |

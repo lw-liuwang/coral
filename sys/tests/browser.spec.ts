@@ -58,6 +58,114 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
   });
 }
 
+for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+  test(`copy folder URIs, rename entries and navigate full paths at ${viewport.width}px`, async ({ page, applicationUrl }, testInfo) => {
+    await page.setViewportSize(viewport);
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: applicationUrl });
+    const errors: string[] = [];
+    page.on('pageerror', error => errors.push(error.message));
+    await page.request.post(applicationUrl + '/new', { form: {
+      vault: 'default', title: '深层文档', content: '# Original content', directory: '团队资料/推理 系统',
+    } });
+    await page.goto(applicationUrl + '/?vault=default');
+    const folderUri = 'coral://vault/default/' + encodeURIComponent('团队资料');
+    const folderCopy = page.getByRole('button', { name: '复制文件夹 URI：团队资料', exact: true });
+    await expect(folderCopy).toHaveAttribute('data-copy', folderUri);
+    await folderCopy.click();
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(folderUri);
+    await page.getByRole('link', { name: '重命名文件夹：团队资料', exact: true }).click();
+    const folderName = page.getByRole('textbox', { name: '文件夹名称', exact: true });
+    await folderName.fill('assets');
+    await page.getByRole('button', { name: '保存名称', exact: true }).click();
+    await expect(page.getByRole('alert')).toContainText('同名');
+    await expect(folderName).toHaveValue('assets');
+    await folderName.fill('团队资料-改名');
+    await page.getByRole('button', { name: '保存名称', exact: true }).click();
+    await page.getByRole('link', { name: '团队资料-改名', exact: true }).click();
+    await page.getByRole('link', { name: '推理 系统', exact: true }).click();
+    const crumbs = page.getByRole('navigation', { name: '当前位置', exact: true });
+    await expect(crumbs).toContainText('团队资料-改名');
+    await expect(crumbs.locator('[aria-current="page"]')).toHaveText('推理 系统');
+    const currentUri = 'coral://vault/default/' + ['团队资料-改名', '推理 系统'].map(encodeURIComponent).join('/');
+    await expect(page.locator('.document-uri code')).toHaveText(currentUri);
+    await page.getByRole('link', { name: '深层文档', exact: true }).click();
+    await expect(crumbs.locator('[aria-current="page"]')).toHaveText('深层文档.md');
+    await expect(crumbs.getByRole('link')).toHaveText(['全部知识库', 'default', '团队资料-改名', '推理 系统']);
+    await page.getByRole('link', { name: '编辑', exact: true }).click();
+    await expect(crumbs.locator('[aria-current="page"]')).toHaveText('深层文档.md');
+    await page.getByRole('link', { name: '取消', exact: true }).click();
+    await page.getByRole('link', { name: '重命名', exact: true }).click();
+    await page.getByRole('textbox', { name: '文件名称（含扩展名）', exact: true }).fill('新文件 #100%.md');
+    await page.getByRole('button', { name: '保存名称', exact: true }).click();
+    await expect(crumbs.locator('[aria-current="page"]')).toHaveText('新文件 #100%.md');
+    await expect(page.locator('article')).toContainText('Original content');
+    await expect(page.locator('.document-uri code')).toHaveText(currentUri + '/' + encodeURIComponent('新文件 #100%.md'));
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+    await page.screenshot({ path: testInfo.outputPath('full-document-path.png'), fullPage: true });
+    await crumbs.getByRole('link', { name: '推理 系统', exact: true }).click();
+    await page.getByRole('link', { name: '重命名当前文件夹', exact: true }).click();
+    await page.getByRole('textbox', { name: '文件夹名称', exact: true }).fill('推理 新目录');
+    await page.getByRole('button', { name: '保存名称', exact: true }).click();
+    await expect(crumbs.locator('[aria-current="page"]')).toHaveText('推理 新目录');
+    await expect(page.locator('.file-entry')).toContainText('新文件 #100%.md');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+    await page.screenshot({ path: testInfo.outputPath('full-folder-path.png'), fullPage: true });
+    expect(errors).toEqual([]);
+  });
+}
+
+for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+  test(`render Mermaid in documents and live previews at ${viewport.width}px`, async ({ page, applicationUrl }, testInfo) => {
+    await page.setViewportSize(viewport);
+    const errors: string[] = [];
+    const blockedStyles: string[] = [];
+    const blockedRendererStyles: string[] = [];
+    const externalRequests: string[] = [];
+    page.on('pageerror', error => errors.push(error.message));
+    page.on('console', message => {
+      if (!/Content Security Policy|violates.*directive/i.test(message.text())) return;
+      blockedStyles.push(message.text());
+      if (message.location().url.includes('/static/mermaid')) blockedRendererStyles.push(message.text());
+    });
+    page.on('request', request => { if (!request.url().startsWith(applicationUrl)) externalRequests.push(request.url()); });
+    const source = '```mermaid\nflowchart LR\nA["开始"] --> B["完成"]\n```\n\n```mermaid\nsequenceDiagram\nAlice->>Bob: Hello\nBob-->>Alice: Done\n```\n\n```mermaid\nflowchart TD\nA -->\n```\n\n```javascript\nconsole.log("Still code");\n```';
+    const created = await page.request.post(applicationUrl + '/new', { form: { vault: 'default', title: 'Mermaid diagrams', content: source }, headers: { Accept: 'application/json' } });
+    expect(created.ok()).toBeTruthy();
+    const doc = await created.json();
+    await page.goto(applicationUrl + doc.url);
+    await expect(page.locator('.mermaid-diagram[data-mermaid-state="rendered"]')).toHaveCount(2);
+    const flow = page.locator('.mermaid-diagram').nth(0).frameLocator('iframe').locator('svg');
+    await expect(flow).toBeVisible();
+    await expect(flow).toContainText('开始');
+    await expect(page.locator('.mermaid-diagram').nth(1).frameLocator('iframe').locator('svg')).toContainText('Alice');
+    await expect(page.locator('.mermaid-error')).toContainText('Mermaid 图表无法渲染');
+    await expect(page.locator('.mermaid-diagram').nth(2).locator('pre')).toContainText('A -->');
+    await expect(page.locator('code.language-javascript')).toContainText('Still code');
+    expect((await page.locator('.mermaid-frame').first().boundingBox())!.height).toBeGreaterThan(60);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+    await page.screenshot({ path: testInfo.outputPath('mermaid-document.png'), fullPage: true });
+
+    await page.getByRole('link', { name: '编辑', exact: true }).click();
+    await page.getByRole('button', { name: '预览', exact: true }).click();
+    await expect(page.locator('#preview .mermaid-diagram[data-mermaid-state="rendered"]')).toHaveCount(2);
+    expect(blockedStyles).toEqual([]);
+    await page.getByRole('button', { name: '书写', exact: true }).click();
+    const editor = page.getByRole('textbox', { name: 'Markdown 正文' });
+    await editor.fill('```mermaid\nflowchart TD\nA -->\n```');
+    await editor.fill('```mermaid\nflowchart TD\nA["新的起点"] --> B["最新预览"]\n```');
+    await page.getByRole('button', { name: '预览', exact: true }).click();
+    await expect(page.locator('#preview .mermaid-diagram')).toHaveCount(1);
+    await expect(page.locator('#preview .mermaid-diagram').frameLocator('iframe').locator('svg')).toContainText('最新预览');
+    await expect(page.locator('#preview .mermaid-error')).toHaveCount(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+    await page.screenshot({ path: testInfo.outputPath('mermaid-preview.png'), fullPage: true });
+    expect(errors).toEqual([]);
+    // Chromium text insertion can emit existing CodeMirror style warnings in the parent page.
+    expect(blockedRendererStyles).toEqual([]);
+    expect(externalRequests).toEqual([]);
+  });
+}
+
 test('browse, search, edit preview, download and upload', async ({ page, applicationUrl }, testInfo) => {
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -262,7 +370,7 @@ test('delete documents and folders directly from the listing with confirmation',
   await expect(page.getByRole('status')).toContainText('已移入知识库回收站');
   await expect(page.getByRole('link', { name: 'nested', exact: true })).toHaveCount(0);
   expect(new URL(page.url()).searchParams.get('directory')).toBe('待删除');
-  await page.getByRole('link', { name: '根目录', exact: true }).click();
+  await page.getByRole('navigation', { name: '当前位置', exact: true }).getByRole('link', { name: 'default', exact: true }).click();
   page.once('dialog', async dialog => { expect(dialog.message()).toContain('附件'); await dialog.accept(); });
   await page.getByRole('button', { name: '删除文件夹：assets', exact: true }).click();
   await expect(page.getByRole('status')).toContainText('已移入知识库回收站');

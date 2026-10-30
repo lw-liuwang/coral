@@ -327,11 +327,66 @@ export class VaultRegistry {
       .map(entry => {
         let snapshot: { version: string; file_count: number } | undefined;
         try { snapshot = this.directorySnapshot(join(root, entry.name)); } catch { /* Unreadable folders remain browsable. */ }
-        return { name: entry.name, relative: prefix + entry.name, version: snapshot?.version,
+        return { name: entry.name, relative: prefix + entry.name, uri: resourceUri(vaultId, prefix + entry.name), version: snapshot?.version,
           file_count: snapshot?.file_count,
           document_count: scan.documents.filter(doc => doc.relative.startsWith(prefix + entry.name + '/')).length };
       });
     return { documents, directories, total: scan.documents.length, skipped: scan.skipped };
+  }
+
+  renameEntry(uri: string) {
+    const { vaultId, relative } = parseUri(uri);
+    const vault = this.vault(vaultId);
+    const target = this.filePath(vault, relative);
+    const directory = lstatSync(target).isDirectory();
+    return { uri: resourceUri(vaultId, relative), vaultId, relative, name: basename(relative),
+      kind: directory ? 'directory' as const : 'document' as const,
+      version: directory ? this.directorySnapshot(target).version : digest(this.bytes(vault, relative)) };
+  }
+
+  rename(uri: string, name: string, version: string) {
+    const entry = this.renameEntry(uri);
+    if (!version) throw new AppError('缺少版本，请重新打开重命名页面');
+    if (version !== entry.version) throw new AppError('内容已修改，请刷新后重试', 409);
+    name = name.trim();
+    if (!name || Buffer.byteLength(name) > 255 || /[\\/:*?"<>|\x00-\x1f\x7f]/.test(name) || /[. ]$/.test(name)
+      || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) throw new AppError('请输入有效的名称');
+    safeParts(name);
+    if (entry.kind === 'document' && !/\.(md|markdown)$/i.test(name)) throw new AppError('文件名称必须保留 .md 或 .markdown 扩展名');
+    const vault = this.vault(entry.vaultId);
+    const source = this.filePath(vault, entry.relative);
+    if (entry.kind === 'directory') {
+      this.refreshVaults();
+      for (const other of this.vaults.values()) {
+        if (!existsSync(other.root)) continue;
+        const root = realpathSync(other.root);
+        if (root === source || root.startsWith(source + sep)) throw new AppError('不能重命名知识库根目录或包含其他知识库的目录');
+      }
+    }
+    const parent = entry.relative.split('/').slice(0, -1).join('/');
+    const relative = (parent ? parent + '/' : '') + name;
+    const target = join(dirname(source), name);
+    if (readdirSync(dirname(source)).some(existing => existing !== entry.name && existing.toLowerCase() === name.toLowerCase())) {
+      throw new AppError('当前目录已有同名文件或文件夹', 409);
+    }
+    if (name !== entry.name) {
+      try {
+        // Hard links give file renames an exclusive destination without rewriting their bytes.
+        if (entry.kind === 'document' && !(process.platform === 'win32' && name.toLowerCase() === entry.name.toLowerCase())) {
+          linkSync(source, target);
+          try {
+            if (this.renameEntry(uri).version !== version) throw new AppError('内容已修改，请刷新后重试', 409);
+            unlinkSync(source);
+          } catch (error) { unlinkSync(target); throw error; }
+        } else renameSync(source, target);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST' || (error as NodeJS.ErrnoException).code === 'ENOTEMPTY') throw new AppError('当前目录已有同名文件或文件夹', 409);
+        throw error;
+      }
+      this.scans.delete(vault.id);
+      this.commit(vault, [entry.relative, relative], `重命名：${entry.relative} → ${relative}`);
+    }
+    return this.renameEntry(resourceUri(vault.id, relative));
   }
 
   readDocument(uri: string, options: { offset?: number; maxChars?: number; heading?: string; version?: string } = {}) {

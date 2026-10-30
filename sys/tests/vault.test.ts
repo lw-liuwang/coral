@@ -23,6 +23,69 @@ function fixture() {
   return { directory, registry, project, root: join(config.data_dir, 'obsdian', 'default') };
 }
 
+test('renaming documents preserves original bytes and rejects stale edits and collisions', () => {
+  const { registry, project } = fixture();
+  const raw = Buffer.from('\uFEFF---\r\ntitle: Original title\r\ncustom: [a, b]\r\n---\r\n# rename-search-needle\r\n');
+  writeFileSync(join(project, 'docs/old.md'), raw);
+  const old = registry.renameEntry('coral://vault/project/docs/old.md');
+  writeFileSync(join(project, 'docs/occupied.md'), 'Keep this');
+  assert.throws(() => registry.rename(old.uri, 'OCCUPIED.md', old.version), /同名/);
+  assert.throws(() => registry.rename(old.uri, 'new.md', ''), /版本/);
+  assert.throws(() => registry.rename(old.uri, 'new.md', 'stale'), /已修改/);
+  assert.throws(() => registry.rename(old.uri, 'new.txt', old.version), /扩展名/);
+  const renamed = registry.rename(old.uri, '新名字 #100%.markdown', old.version);
+  assert.equal(renamed.relative, 'docs/新名字 #100%.markdown');
+  assert.equal(renamed.version, old.version);
+  assert.deepEqual(registry.download(renamed.uri).bytes, raw);
+  assert.equal(registry.document(renamed.uri).title, 'Original title');
+  assert.ok(!existsSync(join(project, 'docs/old.md')));
+  assert.equal(readFileSync(join(project, 'docs/occupied.md'), 'utf8'), 'Keep this');
+  assert.equal(registry.search('rename-search-needle', 'project').results[0].uri, renamed.uri);
+  assert.equal(registry.rename(renamed.uri, renamed.name, renamed.version).uri, renamed.uri);
+  const upper = registry.rename(renamed.uri, '新名字 #100%.MARKDOWN', renamed.version);
+  assert.deepEqual(registry.download(upper.uri).bytes, raw);
+});
+
+test('renaming folders preserves nested notes, attachments, hidden files and empty directories', () => {
+  const { registry, project } = fixture();
+  mkdirSync(join(project, 'docs/nested/empty'), { recursive: true });
+  writeFileSync(join(project, 'docs/nested/note.md'), '# folder-search-needle');
+  writeFileSync(join(project, 'docs/nested/asset.bin'), Buffer.from([0, 255, 7]));
+  writeFileSync(join(project, 'docs/.settings'), 'Hidden content');
+  const old = registry.renameEntry('coral://vault/project/docs');
+  writeFileSync(join(project, 'docs/late.md'), 'Concurrent addition');
+  assert.throws(() => registry.rename(old.uri, '新目录', old.version), /已修改/);
+  const version = registry.renameEntry(old.uri).version;
+  mkdirSync(join(project, 'occupied'));
+  assert.throws(() => registry.rename(old.uri, 'occupied', version), /同名/);
+  const renamed = registry.rename(old.uri, '新目录', version);
+  assert.ok(!existsSync(join(project, 'docs')));
+  assert.equal(registry.browse('project').directories.find(folder => folder.name === '新目录')!.uri, renamed.uri);
+  assert.equal(readFileSync(join(project, '新目录/.settings'), 'utf8'), 'Hidden content');
+  assert.ok(lstatSync(join(project, '新目录/nested/empty')).isDirectory());
+  assert.deepEqual(readFileSync(join(project, '新目录/nested/asset.bin')), Buffer.from([0, 255, 7]));
+  assert.equal(registry.search('folder-search-needle', 'project').results[0].uri, resourceUri('project', '新目录/nested/note.md'));
+  for (const name of ['../escape', 'a/b', '.hidden', 'trailing.', 'CON', 'NUL.txt', 'com1', 'bad:name']) {
+    assert.throws(() => registry.rename(renamed.uri, name, renamed.version), AppError);
+  }
+  assert.throws(() => registry.rename('coral://vault/project/', 'root', renamed.version), AppError);
+});
+
+test('renaming a folder cannot relocate a registered knowledge base', () => {
+  const { registry, project, directory } = fixture();
+  const nested = join(project, 'docs/embedded');
+  mkdirSync(nested);
+  const other = new VaultRegistry(createConfig({ data_dir: join(directory, 'other'), vaults: {
+    project: { path: project }, embedded: { path: nested },
+  } }));
+  try {
+    const entry = other.renameEntry('coral://vault/project/docs');
+    assert.throws(() => other.rename(entry.uri, 'new', entry.version), /包含其他知识库/);
+    assert.ok(existsSync(nested));
+  } finally { other.close(); }
+  assert.ok(registry.browse('project').directories.some(folder => folder.name === 'docs'));
+});
+
 test('configuration defaults and validation', () => {
   assert.equal(createConfig().server.port, 8300);
   assert.throws(() => createConfig({ vaults: { default: { path: '/tmp' } } }));
@@ -659,6 +722,19 @@ test('folders replace fixed classifications without moving legacy documents or c
   const alias = new VaultRegistry(createConfig({ data_dir: registry.config.data_dir, vaults: { alias: { path: join(directory, 'project-link') } } }));
   try { assert.equal(alias.browse('alias').directories[0].name, 'docs'); }
   finally { alias.close(); }
+});
+
+test('Mermaid fences preserve escaped source while ordinary code blocks keep syntax highlighting', () => {
+  const body = '```mermaid\nflowchart LR\nA["<script>alert(1)</script>"] --> B\n```\n\n```typescript\nconst value = 1;\n```';
+  const html = renderMarkdown(body, []);
+  assert.match(html, /class="mermaid-diagram" data-mermaid/);
+  assert.match(html, /class="language-mermaid"/);
+  assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
+  assert.ok(!html.includes('<script>'));
+  assert.match(html, /class="language-typescript"/);
+  assert.match(html, /hljs-keyword/);
+  assert.match(renderMarkdown('~~~MERMAID\nsequenceDiagram\nA->>B: Hello\n~~~', []), /data-mermaid/);
+  assert.ok(!renderMarkdown('```text\nmermaid\n```', []).includes('data-mermaid'));
 });
 
 test('Wiki links support paths, aliases, headings, duplicates and safe rendering', () => {

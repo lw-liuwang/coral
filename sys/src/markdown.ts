@@ -92,6 +92,13 @@ export function renderMarkdown(body: string, documents: Document[], current?: Do
     },
   });
   const usedIds = new Map<string, number>();
+  const originalFence = md.renderer.rules.fence!;
+  md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+    if (tokens[idx].info.trim().split(/\s+/)[0]?.toLowerCase() === 'mermaid') {
+      return `<div class="mermaid-diagram" data-mermaid><pre><code class="language-mermaid">${md.utils.escapeHtml(tokens[idx].content)}</code></pre></div>\n`;
+    }
+    return originalFence(tokens, idx, options, env, self);
+  };
   md.renderer.rules.heading_open = (tokens, idx, options, _env, self) => {
     const base = headingId(tokens[idx + 1]?.content ?? '');
     const count = usedIds.get(base) ?? 0;

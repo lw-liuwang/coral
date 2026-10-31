@@ -93,6 +93,19 @@ vaults: {}
 
 支持 YAML 属性、`[[文件]]`、`[[目录/文件|别名]]`、标题链接、标准 Markdown 相对链接和本地图片。文档页和编辑预览支持以 `mermaid` 标记的代码块，图表渲染器本地打包、按需加载；语法错误时显示提示并保留源码。文档没有固定分类，`index.md`、`log.md` 也是普通文档。跨目录同名文件应使用带目录的引用。
 
+同时支持以 `html` 标记的交互图块，包含的 HTML、CSS、JavaScript、SVG 和 Canvas 在独立沙箱中运行，文档页和编辑预览均可点击交互，高度随内容自动调整。可粘贴 HTML 片段或完整 HTML 文档，例如：
+
+````markdown
+```html
+<style>button { padding: 12px 20px; border-radius: 8px; }</style>
+<button onclick="this.textContent = '已切换状态'">点击交互</button>
+```
+````
+
+需要只显示 HTML 代码时，将代码块标记写成 `html source`；普通 Markdown 中直接写的 HTML 仍按文本显示。交互图块下方可展开查看源码。完整示例见 [HTML 交互架构图](sys/examples/interactive-html.md)，将示例 Markdown 上传到知识库即可体验。
+
+HTML 图块使用自包含内容，不加载外部脚本、样式、字体或网络数据；图片可使用 data URI，图标可用内联 SVG。脚本不能访问 Coral 页面、登录状态或本地存储，也不能调用 Coral API、提交表单或打开嵌套页面。内容过高时在图块内滚动；使用 `100vh` 或固定高度的图表应自行设置合适的容器高度。此功能不需要模型或新增依赖，也不会在 Obsidian 中执行这些交互脚本。
+
 网页和 MCP 写操作在每个仓库自己的 `.git/` 中留痕，仅提交本次涉及的路径。编辑时校验文档版本，保存前的原文件保留在 `.coral-backups/` 中；备份不参与查询，也不会自动清理。外部程序仍可能再次修改文件，备份用于保留可恢复内容。
 
 目录页、文档页和编辑页显示完整的逐级路径，可点击目录返回。文件夹和文档均可复制 `coral://vault/<id>/<相对路径>` URI。网页列表、详情页和 MCP 支持在原父目录中重命名；文档需保留 `.md` 或 `.markdown` 扩展名。同名或版本冲突时拒绝操作，原始正文、YAML 属性和附件保留。重命名改变文件路径和 URI，不修改 YAML 中的标题，也不自动改写其他笔记中的链接。
@@ -132,8 +145,15 @@ stdio 无需先启动 Web；构建后使用绝对路径启动，路径按实际�
 }
 ```
 
+MCP 会通过三层说明指导 Agent：连接初始化的 `instructions` 概述工作流与关键限制；`create_document`、`update_document` 及 `content` 参数描述提示写作规则；`get_writing_guide` 工具提供完整指南和可复制示例。对于未展示 MCP resources 的客户端，仍可直接调用该工具，无需访问服务器文件系统。
+
+`get_writing_guide({})` 默认返回完整指南，也可用 `topic` 选择 `workflow`（读写、分页、版本冲突）、`writing`（书写与图表选择）、`links`（链接与附件）、`mermaid`、`html`（交互与沙箱限制）或 `examples`。相同的完整 Markdown 指南通过静态资源 `coral://guide/authoring` 提供，维护源文件为 [Agent 写作与调用指南](sys/docs/agent-writing-guide.md)。指南默认推荐使用 HTML 绘制新图，注重美观、清晰和适当的交互，Mermaid 仍受支持且现有图表默认保留。指南建议写作前查阅，指导尊重用户要求，不会授权额外写操作。
+
+HTTP 服务更新后需要手动重启；stdio 客户端需重启其 MCP 子进程。随后在 Agent 客户端重新连接或刷新工具列表，才会收到新的连接说明与工具定义。客户端是否自动展示和遵循说明取决于其实现，Coral 不会强制执行文风或图表偏好。
+
 | 工具 | 参数 | 返回 |
 |---|---|---|
+| `get_writing_guide` | 可选 `topic`，默认 `all` | 写作规范、调用流程、链接规则、Mermaid/HTML 限制与完整示例 |
 | `list_vaults` | 无 | 仓库名称、简介、URI、状态、文档数量 |
 | `list_documents` | `vault_id`，可选 `directory/cursor/limit` | 文档 URI、相对路径、标题、版本和分页信息 |
 | `search_documents` | `query`，可选 `vault_id/cursor/limit` | 相关片段、行号、URI 和版本 |

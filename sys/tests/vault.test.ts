@@ -737,6 +737,20 @@ test('Mermaid fences preserve escaped source while ordinary code blocks keep syn
   assert.ok(!renderMarkdown('```text\nmermaid\n```', []).includes('data-mermaid'));
 });
 
+test('HTML embeds keep executable content escaped in the parent and support source-only fences', () => {
+  const source = '<style>body { color: red }</style><button onclick="alert(1)">Run</button><script>alert(2)</script>';
+  const html = renderMarkdown('```html\n' + source + '\n```', []);
+  assert.match(html, /data-html/);
+  assert.match(html, /查看 HTML 源码/);
+  assert.ok(html.includes('&lt;script&gt;alert(2)&lt;/script&gt;'));
+  assert.ok(!html.includes('<script>') && !html.includes('<style>') && !html.includes('<button'));
+  const code = renderMarkdown('```html source\n' + source + '\n```', []);
+  assert.ok(!code.includes('data-html'));
+  assert.match(code, /hljs-tag/);
+  assert.ok(!renderMarkdown(source, []).includes('data-html'));
+  assert.match(renderMarkdown('~~~HTML\n<p>Preview</p>\n~~~', []), /data-html/);
+});
+
 test('Wiki links support paths, aliases, headings, duplicates and safe rendering', () => {
   const { registry, project } = fixture();
   writeFileSync(join(project, 'docs/design.md'), '---\naliases: [架构]\n---\n# 设计 标题');

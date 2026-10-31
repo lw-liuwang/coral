@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "npm run build && tsx watch src/server.ts",
-    "build": "tsc && esbuild src/client.ts src/mermaid-frame.ts --bundle --minify --outdir=dist/public",
+    "build": "tsc && esbuild src/client.ts src/mermaid-frame.ts src/html-frame.ts src/html-runtime.ts --bundle --minify --outdir=dist/public",
     "start": "node dist/server.js",
     "mcp": "tsx src/stdio.ts",
     "mcp:prod": "node dist/stdio.js",

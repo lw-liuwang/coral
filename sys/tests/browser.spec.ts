@@ -1,9 +1,11 @@
 import { test as base, expect } from '@playwright/test';
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createConfig } from '../src/config.js';
 import { createApp } from '../src/web.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 const test = base.extend<{ applicationDirectory: string; applicationUrl: string }>({
   applicationDirectory: async ({}, use) => {
@@ -165,6 +167,92 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     expect(externalRequests).toEqual([]);
   });
 }
+
+for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+  test(`interactive HTML embeds stay isolated in documents and live previews at ${viewport.width}px`, async ({ page, applicationUrl }, testInfo) => {
+    await page.setViewportSize(viewport);
+    const example = readFileSync(join(process.cwd(), 'examples/interactive-html.md'), 'utf8');
+    const fullDocument = `<!doctype html><html><head><style>body{background:#f4f7fa}#extra{height:460px}</style></head><body>
+      <button id="toggle" onclick="document.querySelector('#extra').hidden = !document.querySelector('#extra').hidden">展开详情</button>
+      <div id="extra" hidden>更多内容</div><output id="isolation"></output><output id="network"></output>
+      <script>
+        try { parent.document.body.dataset.compromised = 'yes'; } catch { document.querySelector('#isolation').textContent = '父页面已隔离'; }
+        fetch('/api/preview', {method:'POST'}).catch(() => document.querySelector('#network').textContent = '请求已隔离');
+      </script></body></html>`;
+    const source = example + '\n\n```html\n' + fullDocument + '\n```\n\n```html source\n<button>仅源码</button>\n```\n\n```mermaid\nflowchart LR\nA --> B\n```\n\n<script>document.body.dataset.compromised="yes"</script>';
+    const created = await page.request.post(applicationUrl + '/new', { form: { vault: 'default', title: 'HTML interactive diagrams', content: source }, headers: { Accept: 'application/json' } });
+    expect(created.ok()).toBeTruthy();
+    const doc = await created.json();
+    await page.goto(applicationUrl + doc.url);
+    await expect(page.locator('.html-diagram[data-html-state="rendered"]')).toHaveCount(2);
+    const diagram = page.locator('.html-diagram').first().frameLocator('iframe');
+    await expect(diagram.getByRole('button', { name: /Web/ })).toHaveAttribute('aria-pressed', 'true');
+    await diagram.getByRole('button', { name: /MCP/ }).click();
+    await expect(diagram.locator('#description')).toContainText('Agent');
+    await expect(diagram.getByRole('button', { name: /MCP/ })).toHaveAttribute('aria-pressed', 'true');
+    await page.screenshot({ path: testInfo.outputPath('interactive-html-document.png'), fullPage: true });
+
+    const second = page.locator('.html-diagram').nth(1);
+    const frame = second.frameLocator('iframe');
+    await expect(frame.locator('#isolation')).toHaveText('父页面已隔离');
+    await expect(frame.locator('#network')).toHaveText('请求已隔离');
+    expect(await page.locator('body').getAttribute('data-compromised')).toBeNull();
+    const initialHeight = (await second.locator('iframe').boundingBox())!.height;
+    await frame.getByRole('button', { name: '展开详情' }).click();
+    await expect.poll(async () => (await second.locator('iframe').boundingBox())!.height).toBeGreaterThan(initialHeight + 300);
+    await frame.getByRole('button', { name: '展开详情' }).click();
+    await expect.poll(async () => (await second.locator('iframe').boundingBox())!.height).toBe(initialHeight);
+    await second.getByText('查看 HTML 源码', { exact: true }).click();
+    await expect(second.locator('pre')).toContainText('<!doctype html>');
+    await expect(page.locator('pre').filter({ hasText: '<button>仅源码</button>' })).toBeVisible();
+    await expect(page.locator('.mermaid-diagram[data-mermaid-state="rendered"]')).toHaveCount(1);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+
+    await page.getByRole('link', { name: '编辑', exact: true }).click();
+    await page.getByRole('button', { name: '预览', exact: true }).click();
+    await expect(page.locator('#preview .html-diagram[data-html-state="rendered"]')).toHaveCount(2);
+    await page.locator('#preview .html-diagram').first().frameLocator('iframe').getByRole('button', { name: /MCP/ }).click();
+    await expect(page.locator('#preview .html-diagram').first().frameLocator('iframe').locator('#description')).toContainText('Agent');
+    await page.getByRole('button', { name: '书写', exact: true }).click();
+    await page.getByRole('textbox', { name: 'Markdown 正文' }).fill('```html\n<button onclick="this.textContent=\'更新成功\'">新交互</button>\n```');
+    await page.getByRole('button', { name: '预览', exact: true }).click();
+    await expect(page.locator('#preview .html-diagram')).toHaveCount(1);
+    const updated = page.locator('#preview .html-diagram').frameLocator('iframe');
+    await updated.getByRole('button', { name: '新交互' }).click();
+    await expect(updated.getByRole('button', { name: '更新成功' })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+    await page.getByRole('button', { name: '保存', exact: true }).click();
+    await expect(page.getByRole('status').filter({ hasText: '已保存' })).toBeVisible();
+    await page.getByRole('link', { name: '取消', exact: true }).click();
+    await page.reload();
+    await page.locator('.html-diagram').frameLocator('iframe').getByRole('button', { name: '新交互' }).click();
+    await expect(page.locator('.html-diagram').frameLocator('iframe').getByRole('button', { name: '更新成功' })).toBeVisible();
+  });
+}
+
+test('an agent can retrieve the MCP guide and create a working Mermaid and HTML example', async ({ page, applicationUrl }) => {
+  const client = new Client({ name: 'guide-example-agent', version: '1' });
+  await client.connect(new StreamableHTTPClientTransport(new URL(applicationUrl + '/mcp')));
+  try {
+    const guide = await client.callTool({ name: 'get_writing_guide', arguments: { topic: 'examples' } });
+    expect(guide.isError).toBeFalsy();
+    const markdown = String(guide.structuredContent?.markdown).match(/````markdown\r?\n([\s\S]*?)\r?\n````/)?.[1];
+    expect(markdown).toBeTruthy();
+    const created = await client.callTool({ name: 'create_document', arguments: { vault_id: 'default', title: 'Agent guide example', content: markdown } });
+    expect(created.isError).toBeFalsy();
+    const uri = String(created.structuredContent?.uri);
+    const read = await client.callTool({ name: 'read_document', arguments: { uri } });
+    expect(String(read.structuredContent?.content)).toContain(markdown!);
+    await page.goto(applicationUrl + '/document?uri=' + encodeURIComponent(uri));
+    await expect(page.locator('.mermaid-diagram[data-mermaid-state="rendered"]')).toHaveCount(1);
+    await expect(page.locator('.html-diagram[data-html-state="rendered"]')).toHaveCount(1);
+    const html = page.locator('.html-diagram').frameLocator('iframe');
+    await expect(html.getByRole('button', { name: 'Web', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await html.getByRole('button', { name: 'MCP', exact: true }).click();
+    await expect(html.locator('#detail')).toContainText('Agent');
+    await expect(html.getByRole('button', { name: 'MCP', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  } finally { await client.close(); }
+});
 
 test('browse, search, edit preview, download and upload', async ({ page, applicationUrl }, testInfo) => {
   const errors: string[] = [];

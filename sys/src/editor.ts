@@ -7,6 +7,7 @@ import { bracketMatching, defaultHighlightStyle, syntaxHighlighting, indentOnInp
 import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { searchKeymap, highlightSelectionMatches } from '@codemirror/search';
 import { renderDiagrams } from './diagrams.js';
+import { renderHtmlBlocks } from './html.js';
 
 interface Draft { content: string; title: string; directory: string; version: string; updated: number }
 
@@ -29,7 +30,7 @@ export function mountEditor() {
   const notice = surface.querySelector<HTMLElement>('.draft-notice')!;
   const saveButton = document.querySelector<HTMLButtonElement>(`button[form="${form.id}"]`)!;
   let saving = false;
-  let previewTimer: ReturnType<typeof setTimeout>;
+  let previewTimer: ReturnType<typeof setTimeout> | undefined;
   let draftTimer: ReturnType<typeof setTimeout>;
   let controller: AbortController | undefined;
   const snapshot = (): Draft => ({ content: textarea.value, title: title?.value ?? '', directory: directory?.value ?? '', version: version?.value ?? '', updated: Date.now() });
@@ -57,6 +58,7 @@ export function mountEditor() {
       if (response.ok) {
         preview!.innerHTML = data.html;
         renderDiagrams(preview!);
+        renderHtmlBlocks(preview!);
       }
       else preview!.textContent = data.error ?? '预览暂不可用';
     } catch {
@@ -207,5 +209,7 @@ export function mountEditor() {
     } finally { saving = false; saveButton.disabled = false; form.inert = false; }
   });
   changed();
+  // Initial rendering is immediate; a second render would reset interactive embeds.
+  clearTimeout(previewTimer);
   void render();
 }

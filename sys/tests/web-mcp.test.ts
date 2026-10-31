@@ -351,13 +351,31 @@ test('Mermaid previews escape source and use an isolated renderer without weaken
   assert.match(await renderer.text(), /src="\/static\/mermaid-frame.js"/);
 });
 
+test('HTML previews isolate scripts and keep the application CSP strict', async () => {
+  const { base } = await fixture();
+  const response = await fetch(base + '/api/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ vault: 'project', markdown: '```html\n<script>parent.document.body.remove()</script>\n```' }) });
+  assert.equal(response.status, 200);
+  assert.match((await response.json()).html, /&lt;script&gt;/);
+  assert.ok(!response.headers.get('content-security-policy')!.includes('unsafe-inline'));
+  const renderer = await fetch(base + '/static/html-frame.html');
+  assert.equal(renderer.status, 200);
+  const policy = renderer.headers.get('content-security-policy')!;
+  assert.match(policy, /sandbox allow-scripts/);
+  assert.match(policy, /connect-src 'none'/);
+  assert.match(policy, /frame-src 'none'/);
+  assert.match(policy, /form-action 'none'/);
+  assert.ok(!policy.includes('allow-same-origin') && !policy.includes('allow-top-navigation'));
+  assert.match(await renderer.text(), /src="\/static\/html-frame.js"/);
+});
+
 test('MCP Streamable HTTP handshake, tools, resources, search, read and download', async () => {
   const { base, root, raw, project } = await fixture();
   const client = new Client({ name: 'coral-test-agent', version: '1.0.0' });
   await client.connect(new StreamableHTTPClientTransport(new URL(base + '/mcp')));
   cleanup.push(() => client.close());
   const listed = await client.listTools();
-  const readTools = ['browse_directory', 'download_document', 'list_documents', 'list_trash', 'list_vaults', 'read_document', 'search_documents'];
+  const readTools = ['browse_directory', 'download_document', 'get_writing_guide', 'list_documents', 'list_trash', 'list_vaults', 'read_document', 'search_documents'];
   const writeTools = ['create_directory', 'create_document', 'create_vault', 'delete_directory', 'delete_document', 'delete_vault', 'rename_directory', 'rename_document', 'restore_trash', 'restore_vault', 'update_document'];
   assert.deepEqual(listed.tools.map(tool => tool.name).sort(), [...readTools, ...writeTools].sort());
   for (const tool of listed.tools) {
@@ -396,6 +414,57 @@ test('MCP Streamable HTTP handshake, tools, resources, search, read and download
   assert.equal(missing.isError, true);
   assert.ok(!JSON.stringify(missing).includes(root));
   assert.equal((await fetch(base + '/mcp')).status, 405);
+});
+
+test('MCP clients discover authoring instructions, complete and topic guides, and the same resource without changing documents', async () => {
+  const { base, root, registry, raw } = await fixture();
+  const client = new Client({ name: 'guide-reading-agent', version: '1' });
+  await client.connect(new StreamableHTTPClientTransport(new URL(base + '/mcp')));
+  cleanup.push(() => client.close());
+  const instructions = client.getInstructions()!;
+  assert.match(instructions, /get_writing_guide/);
+  assert.match(instructions, /coral:\/\/guide\/authoring/);
+  assert.match(instructions, /html source/);
+  assert.match(instructions, /Prefer fenced html/);
+  assert.match(instructions, /complete replacement Markdown/);
+  const tools = (await client.listTools()).tools;
+  for (const name of ['create_document', 'update_document']) {
+    const tool = tools.find(tool => tool.name === name)!;
+    assert.match(tool.description!, /get_writing_guide/);
+    assert.match(tool.description!, /Prefer fenced html/);
+    assert.match(tool.description!, /mermaid/);
+    assert.match(tool.description!, /html/);
+    assert.match(JSON.stringify(tool.inputSchema.properties?.content), /get_writing_guide/);
+  }
+  const guideResponse = await client.callTool({ name: 'get_writing_guide', arguments: {} });
+  const full = guideResponse.structuredContent!;
+  assert.equal(full.topic, 'all');
+  assert.equal(guideResponse.content[0].type, 'text');
+  assert.equal((guideResponse.content[0] as { text: string }).text, full.markdown);
+  assert.ok(!String(full.markdown).includes(root));
+  const topics = { workflow: '读写工作流', writing: '文档书写规范', links: '链接与附件', mermaid: 'Mermaid 图表', html: 'HTML 交互图', examples: '可复制示例' };
+  for (const [topic, heading] of Object.entries(topics)) {
+    const part = await callMcp(client, 'get_writing_guide', { topic });
+    assert.equal(part.topic, topic);
+    assert.ok(String(part.markdown).startsWith('## ' + heading));
+    assert.ok(String(full.markdown).includes(String(part.markdown).trim()));
+    assert.ok(String(part.markdown).length < String(full.markdown).length);
+  }
+  const html = await callMcp(client, 'get_writing_guide', { topic: 'html' });
+  assert.match(String(html.markdown), /html source/);
+  assert.match(String(html.markdown), /CDN/);
+  assert.match(String(html.markdown), /1600px/);
+  assert.match(String(html.markdown), /默认推荐/);
+  assert.ok(!String(html.markdown).includes('## 可复制示例'));
+  const invalid = await client.callTool({ name: 'get_writing_guide', arguments: { topic: '../../secret' } });
+  assert.equal(invalid.isError, true);
+  const resources = await client.listResources();
+  const resource = resources.resources.find(item => item.uri === 'coral://guide/authoring')!;
+  assert.equal(resource.mimeType, 'text/markdown');
+  const fetched = await client.readResource({ uri: resource.uri });
+  assert.equal(fetched.contents[0].text, full.markdown);
+  assert.equal(registry.scan('project').documents.length, 1);
+  assert.equal(registry.document('coral://vault/project/docs/design.md').raw, raw);
 });
 
 test('MCP document writes preserve metadata, reject unsafe and stale edits, and recycle and restore files', async () => {
@@ -558,6 +627,11 @@ test('MCP stdio reads and writes through an actual agent subprocess without stdo
   const transport = new StdioClientTransport({ command: process.execPath, args: ['--import', pathToFileURL(resolve('node_modules/tsx/dist/loader.mjs')).href, resolve('src/stdio.ts')], cwd: root, env: { ...process.env as Record<string, string>, CORAL_CONFIG: configPath }, stderr: 'pipe' });
   await client.connect(transport);
   cleanup.push(() => client.close());
+  assert.match(client.getInstructions()!, /get_writing_guide/);
+  const htmlGuide = await callMcp(client, 'get_writing_guide', { topic: 'html' });
+  assert.match(String(htmlGuide.markdown), /HTML 交互图/);
+  const guideResource = await client.readResource({ uri: 'coral://guide/authoring' });
+  assert.match(String(guideResource.contents[0].text), /可复制示例/);
   const response = await client.callTool({ name: 'list_vaults', arguments: {} });
   assert.ok(!response.isError);
   assert.ok(JSON.stringify(response).includes('project'));

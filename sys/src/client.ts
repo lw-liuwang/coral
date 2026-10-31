@@ -1,6 +1,7 @@
 import { createIcons, Library, Search, FilePlus, FolderPlus, Upload, Save, ArrowLeft, Pencil, Download, Trash2, Copy, Folder, FileText, CornerLeftUp, ChevronLeft, ChevronRight, Check, Undo2, Redo2, Heading2, Bold, Italic, Link, List, ListTodo, Quote, Code, Maximize2, Ellipsis, ScanSearch, RotateCcw, RefreshCw, TextCursorInput } from 'lucide';
 import { mountEditor } from './editor.js';
 import { renderDiagrams } from './diagrams.js';
+import { renderHtmlBlocks } from './html.js';
 
 const icons = { Library, Search, FilePlus, FolderPlus, Upload, Save, ArrowLeft, Pencil, Download, Trash2, Copy, Folder, FileText, CornerLeftUp, ChevronLeft, ChevronRight, Check, Undo2, Redo2, Heading2, Bold, Italic, Link, List, ListTodo, Quote, Code, Maximize2, Ellipsis, ScanSearch, RotateCcw, RefreshCw, TextCursorInput };
 createIcons({ icons });
@@ -29,3 +30,4 @@ document.querySelectorAll<HTMLButtonElement>('[data-copy]').forEach(button => bu
 
 mountEditor();
 renderDiagrams();
+renderHtmlBlocks();

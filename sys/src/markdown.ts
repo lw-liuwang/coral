@@ -94,6 +94,10 @@ export function renderMarkdown(body: string, documents: Document[], current?: Do
   const usedIds = new Map<string, number>();
   const originalFence = md.renderer.rules.fence!;
   md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+    const [language, mode] = tokens[idx].info.trim().toLowerCase().split(/\s+/);
+    if (language === 'html' && mode !== 'source') {
+      return `<div class="html-diagram" data-html><details class="html-source"><summary>查看 HTML 源码</summary><pre><code class="language-html">${md.utils.escapeHtml(tokens[idx].content)}</code></pre></details></div>\n`;
+    }
     if (tokens[idx].info.trim().split(/\s+/)[0]?.toLowerCase() === 'mermaid') {
       return `<div class="mermaid-diagram" data-mermaid><pre><code class="language-mermaid">${md.utils.escapeHtml(tokens[idx].content)}</code></pre></div>\n`;
     }

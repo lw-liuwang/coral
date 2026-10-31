@@ -40,6 +40,10 @@ export function createApp(config: Config) {
     res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'self'; base-uri 'none'; form-action 'none'; sandbox allow-scripts");
     res.sendFile(join(base, 'static/mermaid.html'));
   });
+  app.get('/static/html-frame.html', (_req, res) => {
+    res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; frame-src 'none'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'; sandbox allow-scripts");
+    res.sendFile(join(base, 'static/html-frame.html'));
+  });
   app.use('/static', express.static(join(base, 'dist/public')));
   app.get('/static/highlight.css', (_req, res) => res.sendFile(join(base, 'node_modules/highlight.js/styles/github.css')));
   app.use('/static', express.static(join(base, 'static')));

@@ -426,12 +426,14 @@ test('MCP clients discover authoring instructions, complete and topic guides, an
   assert.match(instructions, /coral:\/\/guide\/authoring/);
   assert.match(instructions, /html source/);
   assert.match(instructions, /Prefer fenced html/);
+  assert.match(instructions, /existing Mermaid or other diagrams/);
   assert.match(instructions, /complete replacement Markdown/);
   const tools = (await client.listTools()).tools;
   for (const name of ['create_document', 'update_document']) {
     const tool = tools.find(tool => tool.name === name)!;
     assert.match(tool.description!, /get_writing_guide/);
     assert.match(tool.description!, /Prefer fenced html/);
+    assert.match(tool.description!, /existing/);
     assert.match(tool.description!, /mermaid/);
     assert.match(tool.description!, /html/);
     assert.match(JSON.stringify(tool.inputSchema.properties?.content), /get_writing_guide/);

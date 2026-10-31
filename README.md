@@ -147,7 +147,7 @@ stdio 无需先启动 Web；构建后使用绝对路径启动，路径按实际�
 
 MCP 会通过三层说明指导 Agent：连接初始化的 `instructions` 概述工作流与关键限制；`create_document`、`update_document` 及 `content` 参数描述提示写作规则；`get_writing_guide` 工具提供完整指南和可复制示例。对于未展示 MCP resources 的客户端，仍可直接调用该工具，无需访问服务器文件系统。
 
-`get_writing_guide({})` 默认返回完整指南，也可用 `topic` 选择 `workflow`（读写、分页、版本冲突）、`writing`（书写与图表选择）、`links`（链接与附件）、`mermaid`、`html`（交互与沙箱限制）或 `examples`。相同的完整 Markdown 指南通过静态资源 `coral://guide/authoring` 提供，维护源文件为 [Agent 写作与调用指南](sys/docs/agent-writing-guide.md)。指南默认推荐使用 HTML 绘制新图，注重美观、清晰和适当的交互，Mermaid 仍受支持且现有图表默认保留。指南建议写作前查阅，指导尊重用户要求，不会授权额外写操作。
+`get_writing_guide({})` 默认返回完整指南，也可用 `topic` 选择 `workflow`（读写、分页、版本冲突）、`writing`（书写与图表选择）、`links`（链接与附件）、`mermaid`、`html`（交互与沙箱限制）或 `examples`。相同的完整 Markdown 指南通过静态资源 `coral://guide/authoring` 提供，维护源文件为 [Agent 写作与调用指南](sys/docs/agent-writing-guide.md)。指南推荐使用 HTML 创建和修改图表，编辑涉及已有图表时也尽量转换为 HTML，准确保留原有含义与关系，注重美观、清晰和适当的交互；Mermaid 语法仍受支持。指南建议写作前查阅，指导尊重用户要求，不会授权额外写操作。
 
 HTTP 服务更新后需要手动重启；stdio 客户端需重启其 MCP 子进程。随后在 Agent 客户端重新连接或刷新工具列表，才会收到新的连接说明与工具定义。客户端是否自动展示和遵循说明取决于其实现，Coral 不会强制执行文风或图表偏好。
 

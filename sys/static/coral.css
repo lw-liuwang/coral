@@ -145,6 +145,10 @@ main:has(> article.md-body) > .page-head h1 { font-size: 1.15rem; line-height: 1
 .md-body th { background: #eef1f4; font-weight: 600; }
 .md-body tbody tr:nth-child(even) { background: #f5f6f8; }
 .md-body img { max-width: 100%; height: auto; vertical-align: middle; }
+.md-body .katex { font-size: 1.1em; text-indent: 0; overflow-wrap: normal; }
+.md-body .katex-block { text-indent: 0; overflow-x: auto; overflow-y: hidden; padding: 0.4em 0; }
+.md-body .katex-display { margin: 0; }
+.md-body .katex-error { color: #8a352e; white-space: pre-wrap; overflow-wrap: anywhere; }
 .mermaid-diagram { min-width: 0; margin: 1rem 0; }
 .mermaid-frame { display: block; width: 100%; height: 0; border: 0; }
 .mermaid-diagram[data-mermaid-state="rendered"] > pre { display: none; }

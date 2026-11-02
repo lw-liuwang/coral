@@ -437,6 +437,7 @@ test('MCP clients discover authoring instructions, complete and topic guides, an
     assert.match(tool.description!, /mermaid/);
     assert.match(tool.description!, /html/);
     assert.match(JSON.stringify(tool.inputSchema.properties?.content), /get_writing_guide/);
+    assert.match(JSON.stringify(tool.inputSchema.properties?.content), /LaTeX/);
   }
   const guideResponse = await client.callTool({ name: 'get_writing_guide', arguments: {} });
   const full = guideResponse.structuredContent!;
@@ -444,7 +445,8 @@ test('MCP clients discover authoring instructions, complete and topic guides, an
   assert.equal(guideResponse.content[0].type, 'text');
   assert.equal((guideResponse.content[0] as { text: string }).text, full.markdown);
   assert.ok(!String(full.markdown).includes(root));
-  const topics = { workflow: '读写工作流', writing: '文档书写规范', links: '链接与附件', mermaid: 'Mermaid 图表', html: 'HTML 交互图', examples: '可复制示例' };
+  assert.match(instructions, /get_writing_guide\(topic=math\)/);
+  const topics = { workflow: '读写工作流', writing: '文档书写规范', links: '链接与附件', math: '数学公式', mermaid: 'Mermaid 图表', html: 'HTML 交互图', examples: '可复制示例' };
   for (const [topic, heading] of Object.entries(topics)) {
     const part = await callMcp(client, 'get_writing_guide', { topic });
     assert.equal(part.topic, topic);
@@ -453,6 +455,11 @@ test('MCP clients discover authoring instructions, complete and topic guides, an
     assert.ok(String(part.markdown).length < String(full.markdown).length);
   }
   const html = await callMcp(client, 'get_writing_guide', { topic: 'html' });
+  const math = await callMcp(client, 'get_writing_guide', { topic: 'math' });
+  assert.match(String(math.markdown), /\\frac\{1\}\{d\}/);
+  assert.match(String(math.markdown), /JSON/);
+  assert.match(String(math.markdown), /text.*latex/);
+  assert.ok(!String(math.markdown).includes('## Mermaid 图表'));
   assert.match(String(html.markdown), /html source/);
   assert.match(String(html.markdown), /CDN/);
   assert.match(String(html.markdown), /1600px/);
@@ -467,6 +474,36 @@ test('MCP clients discover authoring instructions, complete and topic guides, an
   assert.equal(fetched.contents[0].text, full.markdown);
   assert.equal(registry.scan('project').documents.length, 1);
   assert.equal(registry.document('coral://vault/project/docs/design.md').raw, raw);
+});
+
+test('Web and MCP list numbered files and folders in natural order across pages', async () => {
+  const { base, project } = await fixture();
+  const directory = join(project, 'cs336');
+  mkdirSync(directory);
+  const names = ['2-note.md', '09-note.md', '10-note.md', '11-note.md', '99-note.md', '100-note.md'];
+  for (const name of [...names].reverse()) writeFileSync(join(directory, name), '# ' + name);
+  for (const name of ['folder100', 'folder11', 'folder10', 'folder2']) mkdirSync(join(directory, name));
+  const folders = ['folder2', 'folder10', 'folder11', 'folder100'];
+  const response = await fetch(base + '/?vault=project&directory=cs336');
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  const labels = [...html.matchAll(/<a class="page-link"[^>]*>(?:<[^>]+>)*([^<]+)<\/a>/g)].map(match => match[1]);
+  assert.deepEqual(labels, [...folders, ...names.map(name => name.replace(/\.md$/, ''))]);
+  const client = new Client({ name: 'natural-order-agent', version: '1' });
+  await client.connect(new StreamableHTTPClientTransport(new URL(base + '/mcp')));
+  cleanup.push(() => client.close());
+  const docs: string[] = [];
+  const entries: string[] = [];
+  for (let cursor = 0; cursor < names.length; cursor += 2) {
+    const page = await callMcp(client, 'list_documents', { vault_id: 'project', directory: 'cs336', cursor, limit: 2 });
+    docs.push(...(page.documents as { path: string }[]).map(doc => doc.path));
+  }
+  for (let cursor = 0; cursor < names.length + folders.length; cursor += 3) {
+    const page = await callMcp(client, 'browse_directory', { vault_id: 'project', directory: 'cs336', cursor, limit: 3 });
+    entries.push(...(page.entries as { uri: string }[]).map(entry => entry.uri));
+  }
+  assert.deepEqual(docs, names.map(name => 'cs336/' + name));
+  assert.deepEqual(entries, [...folders, ...names].map(name => 'coral://vault/project/cs336/' + name));
 });
 
 test('MCP document writes preserve metadata, reject unsafe and stale edits, and recycle and restore files', async () => {

@@ -230,6 +230,88 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
   });
 }
 
+test('LaTeX math renders locally with CSP in documents and previews', async ({ page, applicationUrl }, testInfo) => {
+  const width = 1280;
+  await page.setViewportSize({ width, height: 900 });
+  const errors: string[] = [];
+  const external: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('request', request => { if (!request.url().startsWith(applicationUrl)) external.push(request.url()); });
+  await page.addInitScript(() => {
+    (window as any).mathCspViolations = [];
+    document.addEventListener('securitypolicyviolation', event => (window as any).mathCspViolations.push(event.violatedDirective));
+  });
+  const source = String.raw`# LayerNorm 与 RMSNorm
+
+行内均值 $\mu$ 和括号公式 \(x_i\)。
+
+$$
+\begin{aligned}
+\mu &= \frac{1}{d}\sum_{i=1}^{d}x_i, \\
+\sigma^2 &= \frac{1}{d}\sum_{i=1}^{d}(x_i-\mu)^2
+\end{aligned}
+$$
+
+$$
+y_i=\gamma_i\frac{x_i-\mu}{\sqrt{\sigma^2+\varepsilon}}+\beta_i
+$$
+
+$$
+\begin{aligned}
+r &= \sqrt{\frac{1}{d}\sum_{i=1}^{d}x_i^2+\varepsilon}, \\
+y_i &= \gamma_i\frac{x_i}{r}
+\end{aligned}
+$$
+
+${'`$literal$`'}
+
+$$
+\frac{
+$$`;
+  const created = await page.request.post(applicationUrl + '/new', { form: { vault: 'default', title: '数学公式', content: source }, headers: { Accept: 'application/json' } });
+  expect(created.ok()).toBeTruthy();
+  await page.goto(applicationUrl + (await created.json()).url);
+  await expect(page.locator('article .katex')).toHaveCount(5);
+  await expect(page.locator('article .katex-display')).toHaveCount(3);
+  await expect(page.locator('article .katex-error')).toHaveCount(1);
+  await expect(page.locator('article code')).toHaveText('$literal$');
+  await expect(page.locator('article .frac-line').first()).toBeVisible();
+  await page.evaluate(() => document.fonts.ready);
+  expect(await page.evaluate(() => document.fonts.check('16px KaTeX_Main'))).toBeTruthy();
+  expect(await page.locator('article .katex-html .base').first().evaluate(node => getComputedStyle(node).whiteSpace)).toBe('nowrap');
+  expect(await page.locator('article .frac-line').first().evaluate(node => parseFloat(getComputedStyle(node).borderBottomWidth))).toBeGreaterThan(0);
+  expect(await page.evaluate(() => (window as any).mathCspViolations)).toEqual([]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+  await page.screenshot({ path: testInfo.outputPath(`math-${width}.png`), fullPage: true });
+  await page.getByRole('link', { name: '编辑', exact: true }).click();
+  await page.getByRole('button', { name: '预览', exact: true }).click();
+  await expect(page.locator('#preview .katex-display')).toHaveCount(3);
+  await page.getByRole('button', { name: '书写', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Markdown 正文' }).fill('$$\n\\frac{a}{\\sqrt{b}}\n$$');
+  await page.getByRole('button', { name: '预览', exact: true }).click();
+  await expect(page.locator('#preview .katex-display')).toHaveCount(1);
+  await expect(page.locator('#preview .katex-error')).toHaveCount(0);
+  expect(await page.locator('#preview .frac-line').first().evaluate(node => parseFloat(getComputedStyle(node).borderBottomWidth))).toBeGreaterThan(0);
+  expect(await page.locator('#preview [style]')).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+  expect(errors).toEqual([]);
+  expect(external).toEqual([]);
+});
+
+test('CJK bold labels with punctuation render in documents and live previews', async ({ page, applicationUrl }) => {
+  const source = '# 中文强调\n\n**参考答案：**不能。同一次注入读取旧 code。\n\n这是**“重点”**内容。\n\n`**参考答案：**不能。`';
+  const created = await page.request.post(applicationUrl + '/new', { form: { vault: 'default', title: '中文强调', content: source }, headers: { Accept: 'application/json' } });
+  expect(created.ok()).toBeTruthy();
+  await page.goto(applicationUrl + (await created.json()).url);
+  await expect(page.locator('article strong')).toHaveText(['参考答案：', '“重点”']);
+  await expect(page.locator('article code')).toHaveText('**参考答案：**不能。');
+  expect(await page.locator('article strong').first().evaluate(node => Number(getComputedStyle(node).fontWeight))).toBeGreaterThanOrEqual(600);
+  await page.getByRole('link', { name: '编辑', exact: true }).click();
+  await expect(page.locator('#preview strong')).toHaveText(['参考答案：', '“重点”']);
+  await page.getByRole('textbox', { name: 'Markdown 正文' }).fill('**更新答案：**可以。');
+  await expect(page.locator('#preview strong')).toHaveText(['更新答案：']);
+});
+
 test('an agent can retrieve the MCP guide and create a working Mermaid and HTML example', async ({ page, applicationUrl }) => {
   const client = new Client({ name: 'guide-example-agent', version: '1' });
   await client.connect(new StreamableHTTPClientTransport(new URL(applicationUrl + '/mcp')));

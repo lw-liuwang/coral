@@ -91,7 +91,11 @@ vaults: {}
 
 ## 内容与历史
 
+知识库内的文件和文件夹按名称自然排序，连续数字按数值比较，例如 `09`、`10`、`11`、`99`、`100`；网页目录中先列文件夹再列文档，MCP 列表使用同样的顺序，无需为三位编号修改原有文件名。
+
 支持 YAML 属性、`[[文件]]`、`[[目录/文件|别名]]`、标题链接、标准 Markdown 相对链接和本地图片。文档页和编辑预览支持以 `mermaid` 标记的代码块，图表渲染器本地打包、按需加载；语法错误时显示提示并保留源码。文档没有固定分类，`index.md`、`log.md` 也是普通文档。跨目录同名文件应使用带目录的引用。
+
+文档页和编辑预览支持本地 KaTeX 数学公式：行内用 `$x_i$`，独立公式用各占一行的 `$$` 包围 LaTeX；也支持 `\(...\)`、`\[...\]` 和 `math` 代码块。分数、根号、求和、矩阵及多行对齐均可使用。反引号与 `text` / `latex` 代码块只展示源码，写公式时不要用它们包围。样式和字体由本地服务提供，无需模型或 CDN。MCP 可用 `get_writing_guide({topic:"math"})` 获取规则及完整示例。
 
 同时支持以 `html` 标记的交互图块，包含的 HTML、CSS、JavaScript、SVG 和 Canvas 在独立沙箱中运行，文档页和编辑预览均可点击交互，高度随内容自动调整。可粘贴 HTML 片段或完整 HTML 文档，例如：
 
@@ -147,13 +151,13 @@ stdio 无需先启动 Web；构建后使用绝对路径启动，路径按实际�
 
 MCP 会通过三层说明指导 Agent：连接初始化的 `instructions` 概述工作流与关键限制；`create_document`、`update_document` 及 `content` 参数描述提示写作规则；`get_writing_guide` 工具提供完整指南和可复制示例。对于未展示 MCP resources 的客户端，仍可直接调用该工具，无需访问服务器文件系统。
 
-`get_writing_guide({})` 默认返回完整指南，也可用 `topic` 选择 `workflow`（读写、分页、版本冲突）、`writing`（书写与图表选择）、`links`（链接与附件）、`mermaid`、`html`（交互与沙箱限制）或 `examples`。相同的完整 Markdown 指南通过静态资源 `coral://guide/authoring` 提供，维护源文件为 [Agent 写作与调用指南](sys/docs/agent-writing-guide.md)。指南推荐使用 HTML 创建和修改图表，编辑涉及已有图表时也尽量转换为 HTML，准确保留原有含义与关系，注重美观、清晰和适当的交互；Mermaid 语法仍受支持。指南建议写作前查阅，指导尊重用户要求，不会授权额外写操作。
+`get_writing_guide({})` 默认返回完整指南，也可用 `topic` 选择 `workflow`（读写、分页、版本冲突）、`writing`（书写与图表选择）、`links`（链接与附件）、`math`（公式语法与 JSON 转义）、`mermaid`、`html`（交互与沙箱限制）或 `examples`。相同的完整 Markdown 指南通过静态资源 `coral://guide/authoring` 提供，维护源文件为 [Agent 写作与调用指南](sys/docs/agent-writing-guide.md)。指南推荐使用 HTML 创建和修改图表，编辑涉及已有图表时也尽量转换为 HTML，准确保留原有含义与关系，注重美观、清晰和适当的交互；Mermaid 语法仍受支持。指南建议写作前查阅，指导尊重用户要求，不会授权额外写操作。
 
 HTTP 服务更新后需要手动重启；stdio 客户端需重启其 MCP 子进程。随后在 Agent 客户端重新连接或刷新工具列表，才会收到新的连接说明与工具定义。客户端是否自动展示和遵循说明取决于其实现，Coral 不会强制执行文风或图表偏好。
 
 | 工具 | 参数 | 返回 |
 |---|---|---|
-| `get_writing_guide` | 可选 `topic`，默认 `all` | 写作规范、调用流程、链接规则、Mermaid/HTML 限制与完整示例 |
+| `get_writing_guide` | 可选 `topic`，默认 `all` | 写作规范、调用流程、公式、链接规则、Mermaid/HTML 限制与完整示例 |
 | `list_vaults` | 无 | 仓库名称、简介、URI、状态、文档数量 |
 | `list_documents` | `vault_id`，可选 `directory/cursor/limit` | 文档 URI、相对路径、标题、版本和分页信息 |
 | `search_documents` | `query`，可选 `vault_id/cursor/limit` | 相关片段、行号、URI 和版本 |

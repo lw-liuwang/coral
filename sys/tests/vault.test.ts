@@ -23,6 +23,35 @@ function fixture() {
   return { directory, registry, project, root: join(config.data_dir, 'obsdian', 'default') };
 }
 
+test('math renders LaTeX delimiters and fences while preserving literal code and currency', () => {
+  for (const source of [String.raw`均值 $\mu=\frac{1}{d}\sum_{i=1}^{d}x_i$。`, String.raw`均值 \(\mu=\frac{1}{d}\sum_{i=1}^{d}x_i\)。`]) {
+    const html = renderMarkdown(source, [], undefined, 'test-nonce');
+    assert.match(html, /class="katex"/);
+    assert.match(html, /<math /);
+    assert.match(html, /<mfrac>/);
+    assert.match(html, /<style nonce="test-nonce">/);
+    assert.doesNotMatch(html, / style="/);
+  }
+  for (const source of [String.raw`$$\sqrt{x^2+\varepsilon}$$`, String.raw`\[\sqrt{x^2+\varepsilon}\]`, '```math\n\\sqrt{x^2+\\varepsilon}\n```', '$$\n\\begin{aligned}a&=b\\\\c&=d\\end{aligned}\n$$']) {
+    assert.match(renderMarkdown(source, []), /class="katex-display"/);
+  }
+  for (const source of ['`$x_i$`', '```text\n$$x_i$$\n```', '```latex\nx_i\n```', '    $x_i$', String.raw`Price \$5 and $10, then $20.`, '$ unmatched']) {
+    assert.doesNotMatch(renderMarkdown(source, []), /class="katex/);
+  }
+});
+
+test('math failures and untrusted commands cannot break the page or inject markup', () => {
+  const bad = renderMarkdown('$$\n\\frac{\n$$\n\n正文仍然可读。', []);
+  assert.match(bad, /katex-error/);
+  assert.match(bad, /正文仍然可读/);
+  for (const command of [String.raw`\href{javascript:alert(1)}{click}`, String.raw`\htmlStyle{background:url(https://example.com)}{x}`, String.raw`\includegraphics{https://example.com/a.png}`]) {
+    const html = renderMarkdown('$' + command + '$', []);
+    assert.doesNotMatch(html, /<(?:a|img|script)\b| style="/);
+    assert.doesNotMatch(html.match(/<style[^>]*>[\s\S]*?<\/style>/)?.[0] ?? '', /background:url/);
+  }
+  assert.doesNotMatch(renderMarkdown('```html\n<p>$x_i$</p>\n```', []), /class="katex/);
+});
+
 test('renaming documents preserves original bytes and rejects stale edits and collisions', () => {
   const { registry, project } = fixture();
   const raw = Buffer.from('\uFEFF---\r\ntitle: Original title\r\ncustom: [a, b]\r\n---\r\n# rename-search-needle\r\n');
@@ -353,6 +382,36 @@ test('index and log are ordinary Markdown documents in every Vault', () => {
     assert.deepEqual(registry.listDocuments(id).documents.map(doc => doc.path), ['index.md', 'log.md']);
     assert.equal(registry.search('Research log', id).total, 1);
   }
+});
+
+test('natural filename ordering keeps numbered documents, folders and pagination in sequence', () => {
+  const { registry, project } = fixture();
+  const directory = join(project, 'cs336');
+  mkdirSync(directory);
+  const names = ['00-intro.md', '01-note.md', '1-note.md', '2-note.md', '09-note.md', '10-note.md', '11-note.md', '99-note.md', '100-note.md', '101-note.md', 'index.md'];
+  for (const [i, name] of [...names].reverse().entries()) writeFileSync(join(directory, name), `---\ntitle: Title ${i}\n---\nContent`);
+  for (const name of ['chapter100', 'chapter11', 'chapter10', 'chapter2']) {
+    mkdirSync(join(directory, name));
+    writeFileSync(join(directory, name, 'note.md'), name);
+  }
+  const folderNames = ['chapter2', 'chapter10', 'chapter11', 'chapter100'];
+  const browsed = registry.browse('project', 'cs336');
+  assert.deepEqual(browsed.documents.map(doc => doc.relative), names.map(name => 'cs336/' + name));
+  assert.deepEqual(browsed.directories.map(folder => folder.name), folderNames);
+  const expected = [...names.slice(0, -1).map(name => 'cs336/' + name), ...folderNames.map(name => 'cs336/' + name + '/note.md'), 'cs336/index.md'];
+  const paths: string[] = [];
+  let cursor: number | null = 0;
+  while (cursor !== null) {
+    const page = registry.listDocuments('project', 'cs336', cursor, 3);
+    paths.push(...page.documents.map(doc => doc.path));
+    cursor = page.next_cursor;
+  }
+  assert.deepEqual(paths, expected);
+  assert.equal(new Set(paths).size, expected.length);
+  assert.deepEqual(registry.scan('project').documents.map(doc => doc.relative), expected);
+  writeFileSync(join(directory, '12-note.md'), 'Added after caching');
+  const refreshed = registry.browse('project', 'cs336').documents.map(doc => doc.relative);
+  assert.equal(refreshed.indexOf('cs336/12-note.md'), refreshed.indexOf('cs336/11-note.md') + 1);
 });
 
 test('resource URIs round-trip Unicode, spaces, percent signs and punctuation', () => {
@@ -722,6 +781,27 @@ test('folders replace fixed classifications without moving legacy documents or c
   const alias = new VaultRegistry(createConfig({ data_dir: registry.config.data_dir, vaults: { alias: { path: join(directory, 'project-link') } } }));
   try { assert.equal(alias.browse('alias').directories[0].name, 'docs'); }
   finally { alias.close(); }
+});
+
+test('CJK emphasis beside punctuation renders without spaces and preserves Markdown boundaries', () => {
+  for (const [source, expected] of [
+    ['**参考答案：**不能。', '<strong>参考答案：</strong>不能。'],
+    ['这是**“重点”**内容。', '这是<strong>“重点”</strong>内容。'],
+    ['**参考答案:**不能。', '<strong>参考答案:</strong>不能。'],
+    ['**说明：**支持 **结论：**正确。', '<strong>说明：</strong>支持 <strong>结论：</strong>正确。'],
+    ['这是*“重点”*内容。', '这是<em>“重点”</em>内容。'],
+    ['***参考答案：***不能。', '<em><strong>参考答案：</strong></em>不能。'],
+    ['**答案：**𠮷', '<strong>答案：</strong>𠮷'],
+    ['**答え：**できる', '<strong>答え：</strong>できる'],
+    ['**정답：**가능', '<strong>정답：</strong>가능'],
+  ]) assert.equal(renderMarkdown(source, []), '<p>' + expected + '</p>\n');
+  for (const source of ['**hello:**world', '** 参考答案：**不能。', '**参考答案： **不能。', '**参考答案：不能。', '__参考答案：__不能。']) {
+    assert.ok(!renderMarkdown(source, []).includes('<strong>'), source);
+  }
+  assert.equal(renderMarkdown('`**参考答案：**不能。`', []), '<p><code>**参考答案：**不能。</code></p>\n');
+  assert.equal(renderMarkdown('\\*\\*参考答案：\\*\\*不能。', []), '<p>**参考答案：**不能。</p>\n');
+  assert.equal(renderMarkdown('**参考答案：**', []), '<p><strong>参考答案：</strong></p>\n');
+  assert.match(renderMarkdown('```text\n**参考答案：**不能。\n```', []), /<code class="language-text">\*\*参考答案：\*\*不能。/);
 });
 
 test('Mermaid fences preserve escaped source while ordinary code blocks keep syntax highlighting', () => {

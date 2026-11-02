@@ -11,7 +11,7 @@ const vaultIdSchema = z.string().regex(/^[a-zA-Z0-9_-]+$/).describe('Vault ID re
 const uriSchema = z.string().max(4000).describe('Document resource URI, e.g. coral://vault/project/docs/design.md. Never a local path.');
 const versionSchema = z.string().min(1).max(128).describe('Latest version returned by the corresponding read or listing tool. Required to detect concurrent changes.');
 const directorySchema = z.string().max(4000).default('').describe('Vault-relative directory, using forward slashes. Empty means the Vault root.');
-const contentSchema = z.string().max(MAX_FILE_BYTES).describe('Complete Markdown text with real newlines and optional YAML frontmatter; maximum serialized file size 16 MiB. Call get_writing_guide before authoring. Prefer fenced html for diagram creation and revision, converting existing diagrams in the requested editing scope to HTML where practical while preserving their meaning. Self-contained HTML/CSS/JS runs in a sandbox (no external CDN, network or parent access). Fenced mermaid is also supported. html source displays code. Raw HTML outside fences is escaped.');
+const contentSchema = z.string().max(MAX_FILE_BYTES).describe('Complete Markdown text with real newlines and optional YAML frontmatter; maximum serialized file size 16 MiB. Call get_writing_guide before authoring. Write LaTeX formulas as $...$ inline or $$ on separate lines for display math; use get_writing_guide(topic=math) for examples and JSON escaping. Backticks and text/latex fences display source only. Prefer fenced html for diagram creation and revision, converting existing diagrams in the requested editing scope to HTML where practical while preserving their meaning. Self-contained HTML/CSS/JS runs in a sandbox (no external CDN, network or parent access). Fenced mermaid is also supported. html source displays code. Raw HTML outside fences is escaped.');
 const result = (value: Record<string, unknown>) => ({ content: [{ type: 'text' as const, text: JSON.stringify(value) }], structuredContent: value });
 const safe = <T>(callback: () => T) => {
   try { return callback(); }
@@ -23,14 +23,14 @@ export function createMcpServer(registry: VaultRegistry) {
     instructions: MCP_INSTRUCTIONS,
   });
   server.registerTool('get_writing_guide', {
-    description: 'Read the Coral authoring guide before creating or editing documents. Includes writing and layout conventions, supported links, complete read/write and version-conflict workflows, Mermaid syntax, self-contained interactive HTML/CSS/JS sandbox constraints, and copyable Markdown examples. No Vault access or changes. Default topic=all; use html or examples when drawing interactive diagrams. Also available as coral://guide/authoring.',
-    inputSchema: { topic: z.enum(GUIDE_TOPICS).default('all').describe('all: complete guide; workflow: tools/pagination/versions; writing: prose/layout; links: links/assets; mermaid: static diagrams; html: interactive diagrams and sandbox; examples: copyable Markdown and call sequences.') }, annotations,
+    description: 'Read the Coral authoring guide before creating or editing documents. Includes writing and layout conventions, LaTeX formulas and JSON escaping (topic=math), supported links, complete read/write and version-conflict workflows, Mermaid syntax, self-contained interactive HTML/CSS/JS sandbox constraints, and copyable Markdown examples. No Vault access or changes. Default topic=all; use html or examples when drawing interactive diagrams. Also available as coral://guide/authoring.',
+    inputSchema: { topic: z.enum(GUIDE_TOPICS).default('all').describe('all: complete guide; workflow: tools/pagination/versions; writing: prose/layout; links: links/assets; math: LaTeX formulas and JSON escaping; mermaid: static diagrams; html: interactive diagrams and sandbox; examples: copyable Markdown and call sequences.') }, annotations,
   }, ({ topic }) => {
     const guide = writingGuide(topic);
     return { content: [{ type: 'text' as const, text: guide.markdown }], structuredContent: guide };
   });
   server.registerResource('authoring-guide', WRITING_GUIDE_URI, {
-    description: 'Server-maintained Coral writing guide: tool workflows, Markdown conventions, links, Mermaid, sandboxed interactive HTML and copyable examples. Read before authoring; also available through get_writing_guide for clients that expose tools only.',
+    description: 'Server-maintained Coral writing guide: tool workflows, Markdown conventions, LaTeX formulas, links, Mermaid, sandboxed interactive HTML and copyable examples. Read before authoring; also available through get_writing_guide for clients that expose tools only.',
     mimeType: 'text/markdown',
   }, () => ({ contents: [{ uri: WRITING_GUIDE_URI, mimeType: 'text/markdown', text: writingGuide().markdown }] }));
   server.registerTool('list_vaults', { description: 'List available Obsidian knowledge bases and document counts.', inputSchema: {}, annotations },

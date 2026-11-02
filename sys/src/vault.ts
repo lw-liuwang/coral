@@ -28,6 +28,9 @@ const trashRecordSchema = z.object({ path: z.string(), kind: z.enum(['file', 'di
 interface TrashItem { id: string; vault_id: string; vault_name: string; path: string; uri: string; kind: 'file' | 'directory'; deleted_at: string; version: string }
 const validId = (id: string) => /^[a-zA-Z0-9_-]+$/.test(id);
 const validVaultName = (name: string) => /^[a-z][a-z0-9_-]{0,63}$/.test(name);
+const naturalNameOrder = new Intl.Collator(undefined, { numeric: true });
+// Break ties (e.g. 01/1) consistently so pagination does not depend on filesystem order.
+const compareNames = (a: string, b: string) => naturalNameOrder.compare(a, b) || (a < b ? -1 : a > b ? 1 : 0);
 
 export class VaultRegistry {
   readonly vaults = new Map<string, Vault>();
@@ -264,7 +267,7 @@ export class VaultRegistry {
       let entries;
       try { entries = readdirSync(directory, { withFileTypes: true }); }
       catch { throw new AppError('无法读取知识库目录', 404); }
-      for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      for (const entry of entries.sort((a, b) => compareNames(a.name, b.name))) {
         if (entry.name.startsWith('.') || entry.isSymbolicLink()) continue;
         const rel = prefix + entry.name;
         if (entry.isDirectory()) walk(join(directory, entry.name), rel + '/');
@@ -323,7 +326,7 @@ export class VaultRegistry {
     const documents = scan.documents.filter(doc => doc.relative.startsWith(prefix) && !doc.relative.slice(prefix.length).includes('/'));
     const directories = readdirSync(root, { withFileTypes: true })
       .filter(entry => entry.isDirectory() && !entry.name.startsWith('.') && !entry.isSymbolicLink())
-      .sort((a, b) => a.name.localeCompare(b.name))
+      .sort((a, b) => compareNames(a.name, b.name))
       .map(entry => {
         let snapshot: { version: string; file_count: number } | undefined;
         try { snapshot = this.directorySnapshot(join(root, entry.name)); } catch { /* Unreadable folders remain browsable. */ }

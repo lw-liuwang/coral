@@ -3,6 +3,7 @@ import hljs from 'highlight.js';
 import { posix, extname } from 'node:path';
 import { resourceUri, safeParts } from './content.js';
 import type { Document } from './vault.js';
+import { configureMath } from './math.js';
 
 export const viewUrl = (uri: string) => '/document?uri=' + encodeURIComponent(uri);
 export const editUrl = (uri: string) => '/edit?uri=' + encodeURIComponent(uri);
@@ -84,12 +85,34 @@ export function wikiTargets(body: string): string[] {
   return result;
 }
 
-export function renderMarkdown(body: string, documents: Document[], current?: Document): string {
+export function renderMarkdown(body: string, documents: Document[], current?: Document, styleNonce?: string): string {
   const md = new MarkdownIt({ html: false, linkify: true, typographer: false,
     highlight(code, language) {
       if (language && hljs.getLanguage(language)) return hljs.highlight(code, { language }).value;
       return '';
     },
+  });
+  const mathStyles = configureMath(md, styleNonce);
+  // CommonMark treats punctuation next to emphasis as a word boundary. CJK
+  // prose has no spaces between words, so allow punctuation-bearing labels
+  // beside CJK characters, while keeping normal delimiter pairing/escaping.
+  md.inline.ruler.before('emphasis', 'cjk_emphasis', (state, silent) => {
+    if (silent || state.src[state.pos] !== '*') return false;
+    const scanned = state.scanDelims(state.pos, true);
+    const previous = Array.from(state.src.slice(Math.max(0, state.pos - 2), state.pos)).at(-1) ?? '';
+    const next = String.fromCodePoint(state.src.codePointAt(state.pos + scanned.length) ?? 32);
+    const cjk = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+    const punctuation = /\p{P}/u;
+    const open = scanned.can_open || (cjk.test(previous) && punctuation.test(next));
+    const close = scanned.can_close || (punctuation.test(previous) && cjk.test(next));
+    if (open === scanned.can_open && close === scanned.can_close) return false;
+    for (let i = 0; i < scanned.length; i++) {
+      state.push('text', '', 0).content = '*';
+      state.delimiters.push({ marker: 0x2A, length: scanned.length, token: state.tokens.length - 1,
+        end: -1, open, close });
+    }
+    state.pos += scanned.length;
+    return true;
   });
   const usedIds = new Map<string, number>();
   const originalFence = md.renderer.rules.fence!;
@@ -169,5 +192,6 @@ export function renderMarkdown(body: string, documents: Document[], current?: Do
     }
     return originalImage(tokens, idx, options, env, self);
   };
-  return md.render(body);
+  const html = md.render(body);
+  return html + mathStyles();
 }

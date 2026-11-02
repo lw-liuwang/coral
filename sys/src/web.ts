@@ -9,6 +9,7 @@ import type { Config } from './config.js';
 import { AppError, parseMarkdown, safeParts, titleFor } from './content.js';
 import { createMcpServer } from './mcp.js';
 import { renderMarkdown, viewUrl } from './markdown.js';
+import { katexAssetDirectory } from './math.js';
 import { MAX_FILE_BYTES, VaultRegistry } from './vault.js';
 import { documentPage, editPage, editorStyleNonce, errorPage, home, lintPage, newDirectory, newPage, newVault, renamePage, searchPage, trashPage, vaultCatalog } from './views.js';
 
@@ -46,6 +47,7 @@ export function createApp(config: Config) {
   });
   app.use('/static', express.static(join(base, 'dist/public')));
   app.get('/static/highlight.css', (_req, res) => res.sendFile(join(base, 'node_modules/highlight.js/styles/github.css')));
+  app.use('/static/katex', express.static(katexAssetDirectory));
   app.use('/static', express.static(join(base, 'static')));
 
   const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_FILE_BYTES, files: 20, fields: 5 } });
@@ -175,7 +177,7 @@ export function createApp(config: Config) {
     const vaultId = text(req.body.vault, 'default');
     const documents = registry.scan(vaultId).documents;
     const current = text(req.body.uri) ? registry.document(text(req.body.uri)) : undefined;
-    res.json({ html: renderMarkdown(parseMarkdown(text(req.body.markdown)).body, documents, current) });
+    res.json({ html: renderMarkdown(parseMarkdown(text(req.body.markdown)).body, documents, current, editorStyleNonce) });
   });
   app.get('/api/vaults', (_req, res) => res.json(registry.listVaults()));
   app.get('/api/documents', (req, res) => res.json(registry.listDocuments(text(req.query.vault, 'default'), text(req.query.directory), integer(req.query.cursor), integer(req.query.limit, 50))));

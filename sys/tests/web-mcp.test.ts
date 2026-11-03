@@ -36,6 +36,34 @@ async function callMcp(client: Client, name: string, args: Record<string, unknow
   return response.structuredContent;
 }
 
+test('reading navigation follows natural sibling order and stays within the current directory', async () => {
+  const { base, project, registry } = await fixture();
+  mkdirSync(join(project, 'lessons/nested'), { recursive: true });
+  for (const number of [100, 11, 9, 10]) writeFileSync(join(project, 'lessons/' + number + '.md'), '# Lesson ' + number);
+  writeFileSync(join(project, 'lessons/nested/10.md'), '# Nested lesson');
+  const uri = (number: number) => 'coral://vault/project/lessons/' + number + '.md';
+  const html = await (await fetch(base + '/document?' + new URLSearchParams({ uri: uri(10) }))).text();
+  assert.match(html, /第 2 \/ 4 篇/);
+  assert.match(html, /rel="prev" href="[^"]*9\.md"/);
+  assert.match(html, /rel="next" href="[^"]*11\.md"/);
+  assert.match(html, /aria-label="文末阅读导航"/);
+  assert.doesNotMatch(html.match(/<nav class="reading-nav[^]*?<\/nav>/)?.[0] ?? '', /Nested lesson|design\.md/);
+  const link = html.match(/href="([^"]*#doc-[a-f0-9]+)"/)!;
+  assert.ok(link);
+  const anchor = link[1].split('#')[1];
+  const listing = await (await fetch(base + '/?vault=project&directory=lessons')).text();
+  assert.ok(listing.includes('id="' + anchor + '" data-document-uri="' + uri(10) + '"'));
+  const first = await (await fetch(base + '/document?' + new URLSearchParams({ uri: uri(9) }))).text();
+  assert.ok(first.includes('这是本目录第一篇') && !first.includes('rel="prev"'));
+  const last = await (await fetch(base + '/document?' + new URLSearchParams({ uri: uri(100) }))).text();
+  assert.ok(last.includes('已是本目录最后一篇') && !last.includes('rel="next"'));
+  const removed = registry.document(uri(11));
+  registry.delete(removed.uri, removed.version);
+  const refreshed = await (await fetch(base + '/document?' + new URLSearchParams({ uri: uri(10) }))).text();
+  assert.match(refreshed, /第 2 \/ 3 篇/);
+  assert.match(refreshed, /rel="next" href="[^"]*100\.md"/);
+});
+
 test('cyclic YAML properties render safely and corrupt Vault trash states do not break other pages', async () => {
   const { base, project, registry } = await fixture();
   writeFileSync(join(project, 'cycle.md'), '---\nvalue: &value\n  self: *value\n---\n# Circular YAML');

@@ -31,6 +31,73 @@ const test = base.extend<{ applicationDirectory: string; applicationUrl: string 
   },
 });
 
+test('continuous reading remembers each directory and locates the last document on return', async ({ page, applicationUrl, applicationDirectory }, testInfo) => {
+  const root = join(applicationDirectory, 'obsdian/default/课程 #1');
+  mkdirSync(join(root, '其他目录'), { recursive: true });
+  for (const number of [9, 10, 11, 100]) writeFileSync(join(root, number + '.md'), '---\ntitle: 第 ' + number + ' 篇\n---\n# 第 ' + number + ' 篇\n\n' + '课程正文。\n\n'.repeat(30));
+  writeFileSync(join(root, '其他目录/note.md'), '---\ntitle: 其他课程\n---\n# 其他课程');
+  const directory = applicationUrl + '/?' + new URLSearchParams({ vault: 'default', directory: '课程 #1' });
+  await page.goto(directory);
+  await expect(page.getByRole('region', { name: '阅读进度' })).toBeHidden();
+  await page.getByRole('link', { name: '第 10 篇', exact: true }).click();
+  const nav = page.getByRole('navigation', { name: '阅读导航', exact: true });
+  await expect(nav).toContainText('第 2 / 4 篇');
+  await expect(nav.locator('[rel="prev"] .reading-title')).toHaveText('第 9 篇');
+  await expect(nav.locator('[rel="next"] .reading-title')).toHaveText('第 11 篇');
+  await page.getByRole('navigation', { name: '文末阅读导航', exact: true }).locator('[rel="next"]').click();
+  await expect(page.locator('article h1')).toHaveText('第 11 篇');
+  await page.getByRole('link', { name: '所在目录', exact: true }).click();
+  await expect(page).toHaveURL(/#doc-[a-f0-9]+$/);
+  const current = page.locator('.file-list .is-last-read');
+  await expect(current.locator('.page-link')).toHaveText('第 11 篇');
+  await expect(current.locator('.reading-marker')).toBeVisible();
+  await expect(current).toBeInViewport();
+  const resume = page.getByRole('region', { name: '阅读进度' });
+  await expect(resume.locator('[data-resume-title]')).toHaveText('第 11 篇');
+  await page.reload();
+  await expect(current.locator('.page-link')).toHaveText('第 11 篇');
+  await page.screenshot({ path: testInfo.outputPath('directory-reading-progress.png'), fullPage: true });
+  await resume.getByRole('link', { name: '下一篇', exact: true }).click();
+  await expect(page.locator('article h1')).toHaveText('第 100 篇');
+  await expect(nav.locator('[rel="next"]')).toHaveCount(0);
+  await expect(nav).toContainText('已是本目录最后一篇');
+  await page.screenshot({ path: testInfo.outputPath('continuous-reading.png') });
+  await page.goBack();
+  await expect(current.locator('.page-link')).toHaveText('第 100 篇');
+  await expect(resume.getByRole('link', { name: '下一篇', exact: true })).toBeHidden();
+  await page.goto(directory);
+  await page.getByRole('link', { name: '其他目录', exact: true }).click();
+  await expect(resume).toBeHidden();
+  await page.getByRole('link', { name: '其他课程', exact: true }).click();
+  await expect(nav).toContainText('第 1 / 1 篇');
+  await expect(nav.locator('[rel]')).toHaveCount(0);
+  await page.goto(directory);
+  await expect(current.locator('.page-link')).toHaveText('第 100 篇');
+  rmSync(join(root, '100.md'));
+  await page.reload();
+  await expect(resume).toBeHidden();
+  await expect(current).toHaveCount(0);
+});
+
+test('reading navigation works when browser storage is disabled', async ({ page, applicationUrl, applicationDirectory }) => {
+  await page.addInitScript(() => {
+    Storage.prototype.getItem = () => { throw new DOMException('Storage disabled', 'SecurityError'); };
+    Storage.prototype.setItem = () => { throw new DOMException('Storage disabled', 'SecurityError'); };
+  });
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  const root = join(applicationDirectory, 'obsdian/default');
+  writeFileSync(join(root, '10.md'), '---\ntitle: Storage first\n---\n# Storage first');
+  writeFileSync(join(root, '11.md'), '---\ntitle: Storage next\n---\n# Storage next');
+  await page.goto(applicationUrl + '/document?' + new URLSearchParams({ uri: 'coral://vault/default/10.md' }));
+  await page.getByRole('navigation', { name: '阅读导航', exact: true }).locator('[rel="next"]').click();
+  await expect(page.locator('article h1')).toHaveText('Storage next');
+  await page.getByRole('link', { name: '所在目录', exact: true }).click();
+  await expect(page.locator('.file-list li:target .page-link')).toHaveText('Storage next');
+  await expect(page.getByRole('region', { name: '阅读进度' })).toBeHidden();
+  expect(errors).toEqual([]);
+});
+
 for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
   test(`refresh catalog after manual Vault changes at ${viewport.width}px`, async ({ page, applicationUrl, applicationDirectory }, testInfo) => {
     await page.setViewportSize(viewport);

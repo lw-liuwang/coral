@@ -193,6 +193,23 @@ a.broken, .md-body a.broken {
 .backlinks { margin-top: 2.5rem; border-top: 1px solid var(--border); padding-top: 1rem; }
 .backlinks ul { padding-left: 1.2rem; }
 
+/* 连续阅读与目录进度 */
+.reading-nav { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 1rem; align-items: stretch; margin: 1.4rem auto 0; max-width: 720px; padding: 0.8rem 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.reading-neighbor, .reading-boundary { display: flex; flex-direction: column; justify-content: center; gap: 0.25rem; min-width: 0; padding: 0.45rem 0.6rem; border-radius: 6px; }
+.reading-neighbor:hover { background: var(--code-bg); text-decoration: none; }
+.reading-direction { display: inline-flex; align-items: center; gap: 0.2rem; color: var(--muted); font-size: 0.82rem; }
+.reading-title { font-size: 0.92rem; overflow-wrap: anywhere; }
+.reading-next { text-align: right; align-items: flex-end; }
+.reading-next .reading-direction { flex-direction: row-reverse; }
+.reading-boundary { color: var(--muted); }
+.reading-position { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 0.1rem; font-size: 0.8rem; color: var(--muted); white-space: nowrap; padding: 0 0.6rem; }
+.reading-nav-bottom { margin-top: 2.8rem; }
+.reading-resume { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.8rem; padding: 0.8rem 1rem; margin: 0 0 1rem; background: #f8f0e8; border: 1px solid #e4cabb; border-radius: 8px; }
+.reading-resume > div:first-child { display: flex; flex-direction: column; min-width: 0; overflow-wrap: anywhere; }
+.file-list li.is-last-read, .file-list:not(:has(.is-last-read)) li:target { background: #f8f0e8; box-shadow: inset 3px 0 var(--accent); border-radius: 5px; padding-left: 0.7rem; padding-right: 0.5rem; }
+.file-list li[data-document-uri] { scroll-margin-top: 5rem; }
+.reading-marker { padding: 0.05rem 0.4rem; border-radius: 4px; background: #ecd7c9; color: #743d2d; font-size: 0.75rem; white-space: nowrap; }
+
 /* 搜索结果 */
 .result-item { padding: 0.8rem 0.2rem; border-bottom: 1px dashed var(--border); }
 .result-item .snippet { color: var(--muted); font-size: 0.92rem; }

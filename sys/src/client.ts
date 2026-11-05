@@ -21,11 +21,13 @@ document.querySelectorAll<HTMLFormElement>('form[data-confirm]').forEach(form =>
 document.querySelectorAll<HTMLButtonElement>('[data-copy]').forEach(button => button.addEventListener('click', async () => {
   try {
     const originalTitle = button.title;
+    const originalContent = button.innerHTML;
+    const label = button.querySelector('span')?.outerHTML ?? '';
     await navigator.clipboard.writeText(button.dataset.copy ?? '');
-    button.innerHTML = '<i data-lucide="check"></i>';
+    button.innerHTML = '<i data-lucide="check"></i>' + label;
     button.title = '已复制';
     createIcons({ icons });
-    setTimeout(() => { button.innerHTML = '<i data-lucide="copy"></i>'; button.title = originalTitle; createIcons({ icons }); }, 1500);
+    setTimeout(() => { button.innerHTML = originalContent; button.title = originalTitle; createIcons({ icons }); }, 1500);
   } catch { button.title = '复制失败'; }
 }));
 

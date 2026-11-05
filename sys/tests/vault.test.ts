@@ -388,7 +388,7 @@ test('natural filename ordering keeps numbered documents, folders and pagination
   const { registry, project } = fixture();
   const directory = join(project, 'cs336');
   mkdirSync(directory);
-  const names = ['00-intro.md', '01-note.md', '1-note.md', '2-note.md', '09-note.md', '10-note.md', '11-note.md', '99-note.md', '100-note.md', '101-note.md', 'index.md'];
+  const names = ['index.md', '00-intro.md', '01-note.md', '1-note.md', '2-note.md', '09-note.md', '10-note.md', '11-note.md', '99-note.md', '100-note.md', '101-note.md'];
   for (const [i, name] of [...names].reverse().entries()) writeFileSync(join(directory, name), `---\ntitle: Title ${i}\n---\nContent`);
   for (const name of ['chapter100', 'chapter11', 'chapter10', 'chapter2']) {
     mkdirSync(join(directory, name));
@@ -398,7 +398,7 @@ test('natural filename ordering keeps numbered documents, folders and pagination
   const browsed = registry.browse('project', 'cs336');
   assert.deepEqual(browsed.documents.map(doc => doc.relative), names.map(name => 'cs336/' + name));
   assert.deepEqual(browsed.directories.map(folder => folder.name), folderNames);
-  const expected = [...names.slice(0, -1).map(name => 'cs336/' + name), ...folderNames.map(name => 'cs336/' + name + '/note.md'), 'cs336/index.md'];
+  const expected = [...names.map(name => 'cs336/' + name), ...folderNames.map(name => 'cs336/' + name + '/note.md')];
   const paths: string[] = [];
   let cursor: number | null = 0;
   while (cursor !== null) {
@@ -412,6 +412,21 @@ test('natural filename ordering keeps numbered documents, folders and pagination
   writeFileSync(join(directory, '12-note.md'), 'Added after caching');
   const refreshed = registry.browse('project', 'cs336').documents.map(doc => doc.relative);
   assert.equal(refreshed.indexOf('cs336/12-note.md'), refreshed.indexOf('cs336/11-note.md') + 1);
+});
+
+test('index documents lead each directory regardless of case, extension or title', () => {
+  const { registry, project } = fixture();
+  writeFileSync(join(project, 'INDEX.MARKDOWN'), '---\ntitle: ZZZ\n---\nRoot index');
+  writeFileSync(join(project, '00-start.md'), 'First numbered note');
+  writeFileSync(join(project, 'docs/Index.MD'), 'Nested index');
+  writeFileSync(join(project, 'docs/01-start.md'), 'Nested numbered note');
+  mkdirSync(join(project, 'index.md'));
+  assert.deepEqual(registry.scan('project').documents.map(doc => doc.relative), [
+    'INDEX.MARKDOWN', '00-start.md', 'docs/Index.MD', 'docs/01-start.md',
+  ]);
+  assert.equal(registry.browse('project').documents[0].relative, 'INDEX.MARKDOWN');
+  assert.equal(registry.browse('project', 'docs').documents[0].relative, 'docs/Index.MD');
+  assert.deepEqual(registry.browse('project').directories.map(folder => folder.name), ['docs', 'index.md']);
 });
 
 test('resource URIs round-trip Unicode, spaces, percent signs and punctuation', () => {

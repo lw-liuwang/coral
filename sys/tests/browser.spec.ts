@@ -40,12 +40,12 @@ test('continuous reading remembers each directory and locates the last document 
   await page.goto(directory);
   await expect(page.getByRole('region', { name: '阅读进度' })).toBeHidden();
   await page.getByRole('link', { name: '第 10 篇', exact: true }).click();
-  const nav = page.getByRole('navigation', { name: '阅读导航', exact: true });
+  const nav = page.getByRole('navigation', { name: '文末阅读导航', exact: true });
   await expect(nav).toContainText('第 2 / 4 篇');
   await expect(nav.locator('[rel="prev"] .reading-title')).toHaveText('第 9 篇');
   await expect(nav.locator('[rel="next"] .reading-title')).toHaveText('第 11 篇');
   await page.getByRole('navigation', { name: '文末阅读导航', exact: true }).locator('[rel="next"]').click();
-  await expect(page.locator('article h1')).toHaveText('第 11 篇');
+  await expect(page.locator('.page-head h1')).toHaveText('第 11 篇');
   await page.getByRole('link', { name: '所在目录', exact: true }).click();
   await expect(page).toHaveURL(/#doc-[a-f0-9]+$/);
   const current = page.locator('.file-list .is-last-read');
@@ -58,7 +58,7 @@ test('continuous reading remembers each directory and locates the last document 
   await expect(current.locator('.page-link')).toHaveText('第 11 篇');
   await page.screenshot({ path: testInfo.outputPath('directory-reading-progress.png'), fullPage: true });
   await resume.getByRole('link', { name: '下一篇', exact: true }).click();
-  await expect(page.locator('article h1')).toHaveText('第 100 篇');
+  await expect(page.locator('.page-head h1')).toHaveText('第 100 篇');
   await expect(nav.locator('[rel="next"]')).toHaveCount(0);
   await expect(nav).toContainText('已是本目录最后一篇');
   await page.screenshot({ path: testInfo.outputPath('continuous-reading.png') });
@@ -90,8 +90,8 @@ test('reading navigation works when browser storage is disabled', async ({ page,
   writeFileSync(join(root, '10.md'), '---\ntitle: Storage first\n---\n# Storage first');
   writeFileSync(join(root, '11.md'), '---\ntitle: Storage next\n---\n# Storage next');
   await page.goto(applicationUrl + '/document?' + new URLSearchParams({ uri: 'coral://vault/default/10.md' }));
-  await page.getByRole('navigation', { name: '阅读导航', exact: true }).locator('[rel="next"]').click();
-  await expect(page.locator('article h1')).toHaveText('Storage next');
+  await page.getByRole('navigation', { name: '文末阅读导航', exact: true }).locator('[rel="next"]').click();
+  await expect(page.locator('.page-head h1')).toHaveText('Storage next');
   await page.getByRole('link', { name: '所在目录', exact: true }).click();
   await expect(page.locator('.file-list li:target .page-link')).toHaveText('Storage next');
   await expect(page.getByRole('region', { name: '阅读进度' })).toBeHidden();
@@ -134,7 +134,7 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     const errors: string[] = [];
     page.on('pageerror', error => errors.push(error.message));
     await page.request.post(applicationUrl + '/new', { form: {
-      vault: 'default', title: '深层文档', content: '# Original content', directory: '团队资料/推理 系统',
+      vault: 'default', title: '深层文档', content: '# 深层文档\n\nOriginal content', directory: '团队资料/推理 系统',
     } });
     await page.goto(applicationUrl + '/?vault=default');
     const folderUri = 'coral://vault/default/' + encodeURIComponent('团队资料');
@@ -156,7 +156,14 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     await expect(crumbs).toContainText('团队资料-改名');
     await expect(crumbs.locator('[aria-current="page"]')).toHaveText('推理 系统');
     const currentUri = 'coral://vault/default/' + ['团队资料-改名', '推理 系统'].map(encodeURIComponent).join('/');
-    await expect(page.locator('.document-uri code')).toHaveText(currentUri);
+    await expect(page.locator('.document-uri')).toHaveCount(0);
+    await expect(page.locator('.page-head [data-copy]')).toHaveAttribute('data-copy', currentUri);
+    await expect(page.locator('.file-list .row-actions .icon-btn')).toHaveCount(0);
+    const entryActions = page.locator('.file-list .row-actions').first();
+    await expect(entryActions.locator('.btn')).toHaveCount(3);
+    await expect(entryActions).toContainText('复制链接');
+    await expect(entryActions).toContainText('重命名');
+    await expect(entryActions).toContainText('删除');
     await page.getByRole('link', { name: '深层文档', exact: true }).click();
     await expect(crumbs.locator('[aria-current="page"]')).toHaveText('深层文档.md');
     await expect(crumbs.getByRole('link')).toHaveText(['全部知识库', 'default', '团队资料-改名', '推理 系统']);
@@ -168,7 +175,16 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     await page.getByRole('button', { name: '保存名称', exact: true }).click();
     await expect(crumbs.locator('[aria-current="page"]')).toHaveText('新文件 #100%.md');
     await expect(page.locator('article')).toContainText('Original content');
-    await expect(page.locator('.document-uri code')).toHaveText(currentUri + '/' + encodeURIComponent('新文件 #100%.md'));
+    const documentUri = currentUri + '/' + encodeURIComponent('新文件 #100%.md');
+    await expect(page.locator('.document-uri')).toHaveCount(0);
+    const actions = page.locator('.page-head .btns');
+    const documentCopy = actions.getByRole('button', { name: '复制 Coral 链接', exact: true });
+    await expect(documentCopy).toHaveAttribute('class', 'btn');
+    await expect(actions.getByRole('link', { name: '重命名', exact: true })).toHaveAttribute('class', 'btn');
+    await expect(documentCopy).toHaveAttribute('data-copy', documentUri);
+    await documentCopy.click();
+    await expect(documentCopy).toHaveText('复制 Coral 链接');
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(documentUri);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
     await page.screenshot({ path: testInfo.outputPath('full-document-path.png'), fullPage: true });
     await crumbs.getByRole('link', { name: '推理 系统', exact: true }).click();
@@ -513,7 +529,7 @@ test('create a knowledge base then create and upload Markdown documents', async 
   await page.getByRole('textbox', { name: '正文', exact: true }).fill('# 设计内容\n\n独立仓库的 Markdown。');
   await page.getByRole('button', { name: '创建', exact: true }).click();
   await expect(page.locator('article')).toContainText('独立仓库的 Markdown');
-  await expect(page.locator('.document-uri')).toContainText(`coral://vault/${vaultId}/`);
+  await expect(page.getByRole('button', { name: '复制 Coral 链接', exact: true })).toHaveAttribute('data-copy', new RegExp(`^coral://vault/${vaultId}/`));
   await page.getByRole('link', { name: '文档', exact: true }).click();
   await page.getByLabel('Markdown 文档').setInputFiles({ name: '上传.md', mimeType: 'text/markdown', buffer: Buffer.from('# 上传内容') });
   await page.getByRole('button', { name: '上传 Markdown' }).click();
@@ -557,14 +573,14 @@ test('browse Obsidian folders, create and upload in the selected directory', asy
   await page.getByRole('textbox', { name: '保存目录', exact: true }).fill('项目资料/docs');
   await page.getByRole('textbox', { name: '正文', exact: true }).fill('# 方案\n\nObsidian 文件夹。');
   await page.getByRole('button', { name: '创建', exact: true }).click();
-  await expect(page.locator('.document-uri')).toContainText('/docs/');
+  await expect(page.getByRole('button', { name: '复制 Coral 链接', exact: true })).toHaveAttribute('data-copy', /\/docs\//);
   await expect(page.getByRole('button', { name: '转换分类' })).toHaveCount(0);
   await page.getByRole('link', { name: '所在目录', exact: true }).click();
-  await expect(page.getByRole('link', { name: '方案', exact: true })).toBeVisible();
+  await expect(page.locator('.file-list').getByRole('link', { name: '方案', exact: true })).toBeVisible();
   await page.getByRole('link', { name: '文档', exact: true }).click();
   await page.getByRole('link', { name: '项目资料', exact: true }).click();
   await page.getByRole('link', { name: 'docs', exact: true }).click();
-  await expect(page.getByRole('link', { name: '方案', exact: true })).toBeVisible();
+  await expect(page.locator('.file-list').getByRole('link', { name: '方案', exact: true })).toBeVisible();
   await page.getByLabel('Markdown 文档').setInputFiles({ name: '会议.md', mimeType: 'text/markdown', buffer: Buffer.from('---\ntype: meeting\ntags: [研发]\n---\n# 会议记录') });
   await page.getByRole('button', { name: '上传 Markdown' }).click();
   await expect(page).toHaveURL(/directory=/);

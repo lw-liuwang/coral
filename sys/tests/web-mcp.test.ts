@@ -47,6 +47,8 @@ test('reading navigation follows natural sibling order and stays within the curr
   assert.match(html, /rel="prev" href="[^"]*9\.md"/);
   assert.match(html, /rel="next" href="[^"]*11\.md"/);
   assert.match(html, /aria-label="文末阅读导航"/);
+  assert.equal([...html.matchAll(/<nav class="reading-nav/g)].length, 1);
+  assert.match(html, /<\/article><nav class="reading-nav/);
   assert.doesNotMatch(html.match(/<nav class="reading-nav[^]*?<\/nav>/)?.[0] ?? '', /Nested lesson|design\.md/);
   const link = html.match(/href="([^"]*#doc-[a-f0-9]+)"/)!;
   assert.ok(link);
@@ -508,7 +510,7 @@ test('Web and MCP list numbered files and folders in natural order across pages'
   const { base, project } = await fixture();
   const directory = join(project, 'cs336');
   mkdirSync(directory);
-  const names = ['2-note.md', '09-note.md', '10-note.md', '11-note.md', '99-note.md', '100-note.md'];
+  const names = ['index.md', '2-note.md', '09-note.md', '10-note.md', '11-note.md', '99-note.md', '100-note.md'];
   for (const name of [...names].reverse()) writeFileSync(join(directory, name), '# ' + name);
   for (const name of ['folder100', 'folder11', 'folder10', 'folder2']) mkdirSync(join(directory, name));
   const folders = ['folder2', 'folder10', 'folder11', 'folder100'];
@@ -516,7 +518,13 @@ test('Web and MCP list numbered files and folders in natural order across pages'
   assert.equal(response.status, 200);
   const html = await response.text();
   const labels = [...html.matchAll(/<a class="page-link"[^>]*>(?:<[^>]+>)*([^<]+)<\/a>/g)].map(match => match[1]);
-  assert.deepEqual(labels, [...folders, ...names.map(name => name.replace(/\.md$/, ''))]);
+  assert.deepEqual(labels, ['index', ...folders, ...names.slice(1).map(name => name.replace(/\.md$/, ''))]);
+  const indexPage = await (await fetch(base + '/document?' + new URLSearchParams({ uri: 'coral://vault/project/cs336/index.md' }))).text();
+  assert.match(indexPage, /第 1 \/ 7 篇/);
+  assert.doesNotMatch(indexPage, /rel="prev"/);
+  assert.match(indexPage, /rel="next" href="[^"]*2-note\.md"/);
+  const firstPage = await (await fetch(base + '/document?' + new URLSearchParams({ uri: 'coral://vault/project/cs336/2-note.md' }))).text();
+  assert.match(firstPage, /rel="prev" href="[^"]*index\.md"/);
   const client = new Client({ name: 'natural-order-agent', version: '1' });
   await client.connect(new StreamableHTTPClientTransport(new URL(base + '/mcp')));
   cleanup.push(() => client.close());
@@ -531,7 +539,7 @@ test('Web and MCP list numbered files and folders in natural order across pages'
     entries.push(...(page.entries as { uri: string }[]).map(entry => entry.uri));
   }
   assert.deepEqual(docs, names.map(name => 'cs336/' + name));
-  assert.deepEqual(entries, [...folders, ...names].map(name => 'coral://vault/project/cs336/' + name));
+  assert.deepEqual(entries, ['index.md', ...folders, ...names.slice(1)].map(name => 'coral://vault/project/cs336/' + name));
 });
 
 test('MCP document writes preserve metadata, reject unsafe and stale edits, and recycle and restore files', async () => {

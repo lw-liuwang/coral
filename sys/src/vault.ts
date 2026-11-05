@@ -31,6 +31,7 @@ const validVaultName = (name: string) => /^[a-z][a-z0-9_-]{0,63}$/.test(name);
 const naturalNameOrder = new Intl.Collator(undefined, { numeric: true });
 // Break ties (e.g. 01/1) consistently so pagination does not depend on filesystem order.
 const compareNames = (a: string, b: string) => naturalNameOrder.compare(a, b) || (a < b ? -1 : a > b ? 1 : 0);
+export const isIndexDocument = (path: string) => /^index\.(md|markdown)$/i.test(basename(path));
 
 export class VaultRegistry {
   readonly vaults = new Map<string, Vault>();
@@ -267,7 +268,8 @@ export class VaultRegistry {
       let entries;
       try { entries = readdirSync(directory, { withFileTypes: true }); }
       catch { throw new AppError('无法读取知识库目录', 404); }
-      for (const entry of entries.sort((a, b) => compareNames(a.name, b.name))) {
+      for (const entry of entries.sort((a, b) =>
+        Number(b.isFile() && isIndexDocument(b.name)) - Number(a.isFile() && isIndexDocument(a.name)) || compareNames(a.name, b.name))) {
         if (entry.name.startsWith('.') || entry.isSymbolicLink()) continue;
         const rel = prefix + entry.name;
         if (entry.isDirectory()) walk(join(directory, entry.name), rel + '/');

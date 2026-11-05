@@ -1,7 +1,7 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { AppError, parseMarkdown, resourceUri } from './content.js';
-import { MAX_FILE_BYTES, publicDocument, type VaultRegistry } from './vault.js';
+import { isIndexDocument, MAX_FILE_BYTES, publicDocument, type VaultRegistry } from './vault.js';
 import { GUIDE_TOPICS, MCP_INSTRUCTIONS, WRITING_GUIDE_URI, writingGuide } from './mcp-guide.js';
 
 const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
@@ -59,13 +59,14 @@ export function createMcpServer(registry: VaultRegistry) {
   }));
 
   server.registerTool('browse_directory', {
-    description: 'List immediate subfolders and document metadata in a Vault directory. Folder entries include coral URIs, versions and file counts for delete_directory. Paginate folders and documents together with cursor and limit.',
+    description: 'List immediate subfolders and document metadata in a Vault directory. Index documents (index.md/index.markdown, case-insensitive) come first, then folders, then other documents in natural filename order. Folder entries include coral URIs, versions and file counts for delete_directory. Paginate folders and documents together with cursor and limit.',
     inputSchema: { vault_id: vaultIdSchema, directory: directorySchema, cursor: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(100).default(50) }, annotations,
   }, ({ vault_id, directory, cursor, limit }) => safe(() => {
     const listing = registry.browse(vault_id, directory);
     const entries = [
+      ...listing.documents.filter(doc => isIndexDocument(doc.relative)).map(doc => ({ kind: 'document' as const, ...publicDocument(doc) })),
       ...listing.directories.map(folder => ({ kind: 'directory' as const, ...folder, uri: resourceUri(vault_id, folder.relative) })),
-      ...listing.documents.map(doc => ({ kind: 'document' as const, ...publicDocument(doc) })),
+      ...listing.documents.filter(doc => !isIndexDocument(doc.relative)).map(doc => ({ kind: 'document' as const, ...publicDocument(doc) })),
     ];
     return result({ vault_uri: resourceUri(vault_id), directory, entries: entries.slice(cursor, cursor + limit),
       total: entries.length, next_cursor: cursor + limit < entries.length ? cursor + limit : null, skipped_documents: listing.skipped });

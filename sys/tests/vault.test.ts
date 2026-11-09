@@ -52,6 +52,58 @@ test('math failures and untrusted commands cannot break the page or inject marku
   assert.doesNotMatch(renderMarkdown('```html\n<p>$x_i$</p>\n```', []), /class="katex/);
 });
 
+test('moving notes preserves bytes, updates search and refuses unsafe destinations and collisions', () => {
+  const { registry, project } = fixture();
+  const raw = Buffer.from('\uFEFF---\r\ntitle: 日报\r\ncustom: [a, b]\r\n---\r\nmove-search-needle\r\n');
+  writeFileSync(join(project, 'docs/日报 #6%.md'), raw);
+  mkdirSync(join(project, '归档/2026-11'), { recursive: true });
+  const doc = registry.scan('project').documents[0];
+  assert.deepEqual(new Set(registry.listDirectories('project')), new Set(['', 'docs', '归档', '归档/2026-11']));
+  assert.throws(() => registry.moveDocument(doc.uri, '归档/2026-11', ''), /版本/);
+  assert.throws(() => registry.moveDocument(doc.uri, '归档/2026-11', 'stale'), /已被修改/);
+  for (const directory of ['../outside', '/absolute', 'docs/../outside', 'docs\\outside', '.obsidian']) {
+    assert.throws(() => registry.moveDocument(doc.uri, directory, doc.version), AppError);
+  }
+  assert.throws(() => registry.moveDocument(doc.uri, 'missing', doc.version), AppError);
+  assert.throws(() => registry.moveDocument(doc.uri, 'docs/日报 #6%.md', doc.version), /文件夹/);
+  assert.equal(registry.moveDocument(doc.uri, 'docs', doc.version).uri, doc.uri);
+  writeFileSync(join(project, '归档/2026-11/日报 #6%.md'), 'existing content');
+  assert.throws(() => registry.moveDocument(doc.uri, '归档/2026-11', doc.version), /同名/);
+  assert.equal(readFileSync(join(project, '归档/2026-11/日报 #6%.md'), 'utf8'), 'existing content');
+  rmSync(join(project, '归档/2026-11/日报 #6%.md'));
+  symlinkSync(join(project, '归档'), join(project, 'linked'), 'junction');
+  assert.throws(() => registry.moveDocument(doc.uri, 'linked', doc.version), /符号链接/);
+  assert.ok(!registry.listDirectories('project').includes('linked'));
+  const moved = registry.moveDocument(doc.uri, '归档/2026-11', doc.version);
+  assert.equal(moved.relative, '归档/2026-11/日报 #6%.md');
+  assert.equal(moved.version, doc.version);
+  assert.deepEqual(registry.download(moved.uri).bytes, raw);
+  assert.ok(!existsSync(join(project, doc.relative)));
+  assert.throws(() => registry.document(doc.uri), AppError);
+  assert.equal(registry.search('move-search-needle', 'project').results[0].uri, moved.uri);
+  const root = registry.moveDocument(moved.uri, '', moved.version);
+  assert.equal(root.relative, '日报 #6%.md');
+  assert.deepEqual(registry.download(root.uri).bytes, raw);
+});
+
+test('moving notes rolls back the destination if the source changes during the move', () => {
+  const { registry, project } = fixture();
+  writeFileSync(join(project, 'docs/note.md'), 'original content');
+  mkdirSync(join(project, 'archive'));
+  const doc = registry.document('coral://vault/project/docs/note.md');
+  const originalLink = fs.linkSync;
+  try {
+    fs.linkSync = ((source, target) => {
+      originalLink(source, target);
+      writeFileSync(source, 'external edit');
+    }) as typeof fs.linkSync;
+    syncBuiltinESMExports();
+    assert.throws(() => registry.moveDocument(doc.uri, 'archive', doc.version), /已被修改/);
+    assert.ok(!existsSync(join(project, 'archive/note.md')));
+    assert.equal(readFileSync(join(project, 'docs/note.md'), 'utf8'), 'external edit');
+  } finally { fs.linkSync = originalLink; syncBuiltinESMExports(); }
+});
+
 test('renaming documents preserves original bytes and rejects stale edits and collisions', () => {
   const { registry, project } = fixture();
   const raw = Buffer.from('\uFEFF---\r\ntitle: Original title\r\ncustom: [a, b]\r\n---\r\n# rename-search-needle\r\n');

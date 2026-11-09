@@ -11,7 +11,7 @@ import { createMcpServer } from './mcp.js';
 import { renderMarkdown, viewUrl } from './markdown.js';
 import { katexAssetDirectory } from './math.js';
 import { MAX_FILE_BYTES, VaultRegistry } from './vault.js';
-import { documentPage, editPage, editorStyleNonce, errorPage, home, lintPage, newDirectory, newPage, newVault, renamePage, searchPage, trashPage, vaultCatalog } from './views.js';
+import { documentPage, editPage, editorStyleNonce, errorPage, home, lintPage, movePage, newDirectory, newPage, newVault, renamePage, searchPage, trashPage, vaultCatalog } from './views.js';
 
 const base = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const text = (value: unknown, fallback = '') => typeof value === 'string' ? value : fallback;
@@ -145,6 +145,22 @@ export function createApp(config: Config) {
       if (!(error instanceof AppError)) throw error;
       if (req.get('accept') === 'application/json') { res.status(error.status).json({ error: error.message }); return; }
       res.status(error.status).send(renamePage(registry, entry, { ...fields, error: error.message }));
+    }
+  });
+  app.get('/move', (req, res) => res.send(movePage(registry, registry.document(uri(req)), { from: text(req.query.from) })));
+  app.post('/move', (req, res) => {
+    const doc = registry.document(uri(req));
+    const fields = { directory: text(req.body.directory), version: text(req.body.version), from: text(req.body.from) };
+    try {
+      const moved = registry.moveDocument(doc.uri, fields.directory, fields.version);
+      const url = fields.from === 'document' ? viewUrl(moved.uri)
+        : '/?' + new URLSearchParams({ vault: moved.vaultId, directory: fields.directory });
+      if (req.get('accept') === 'application/json') { res.json({ uri: moved.uri, version: moved.version, url }); return; }
+      res.redirect(303, url);
+    } catch (error) {
+      if (!(error instanceof AppError)) throw error;
+      if (req.get('accept') === 'application/json') { res.status(error.status).json({ error: error.message }); return; }
+      res.status(error.status).send(movePage(registry, doc, { ...fields, error: error.message }));
     }
   });
   app.get('/edit', (req, res) => res.send(editPage(registry, registry.document(uri(req)))));

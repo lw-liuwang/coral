@@ -62,6 +62,8 @@ bash sys/run.sh
 
 网页和 MCP 都能重命名文件或文件夹，位置仍在原父目录中。文档需保留 `.md` 或 `.markdown` 扩展名。同名或版本冲突时，操作会被拒绝；正文、YAML 属性和附件会保留。重命名会改变路径和 URI，但不会修改 YAML 中的标题，也不会自动更新其他笔记中的链接。
 
+笔记列表和阅读页提供「移动」按钮，可以选择当前知识库内的目标文件夹，也可以移回根目录。文件名、正文和 YAML 属性保持原样，同名文件不会被覆盖。请先创建目标文件夹；移动后 URI 会改变，已有链接及相对附件路径需要自行检查。MCP 使用 `move_document`，例如将 `work/2026-11-6.md` 的 `directory` 设为 `work/2026-11`。
+
 ## 文档格式
 
 支持 YAML 属性、`[[文件]]`、`[[目录/文件|别名]]`、标题链接、标准 Markdown 相对链接和本地图片。跨目录引用同名文件时，应写明目录。
@@ -158,6 +160,7 @@ Agent 可以调用 `get_writing_guide({})` 获取完整指南，或用 `topic` �
 |---|---|
 | `workflow` | 读写流程、分页和版本冲突 |
 | `writing` | 书写规则和图表选择 |
+| `ci` | 写入前“说人话”审查、编辑边界与检查流程 |
 | `links` | 链接和附件 |
 | `math` | 公式语法和 JSON 转义 |
 | `mermaid` | Mermaid 语法和限制 |
@@ -168,13 +171,15 @@ Agent 可以调用 `get_writing_guide({})` 获取完整指南，或用 `topic` �
 
 指南建议 Agent 写作前先查阅规则，推荐用 HTML 创建和修改图表；编辑涉及已有图表时，也尽量转成 HTML，保留原有含义与关系，并注意美观、清晰和适当的交互。Mermaid 仍可使用。指南要求尊重用户指示，不会授权额外的写操作。
 
+创建或更新正文前，Agent 应按 `get_writing_guide({topic:"ci"})` 读取 `coral://vault/agent/skills/shuorenhua/SKILL.md`，完成初稿后独立审查，修正并复核后再写入，保存后读回核对。检查保留事实、术语、数字、条件、承诺和受保护的代码及引文，不采用禁词表或“AI 含量”评分，检查报告不混入正文。这是 Agent 执行的工作流；服务端不做语义判定，也不以文风硬性拦截写入。该 skill 由此知识库维护，缺失或不可读时 Agent 应报告检查未完成，并遵从用户明确要求。
+
 更新 HTTP 服务后，需要手动重启；使用 stdio 时，需要重启客户端的 MCP 子进程。之后在 Agent 客户端重新连接或刷新工具列表，才能收到新的连接说明和工具定义。客户端是否展示、是否遵循这些说明，取决于客户端实现；Coral 不会强制执行文风或图表偏好。
 
 ### 可用工具
 
 | 工具 | 参数 | 返回 |
 |---|---|---|
-| `get_writing_guide` | 可选 `topic`，默认 `all` | 写作规范、调用流程、公式、链接规则、Mermaid/HTML 限制与完整示例 |
+| `get_writing_guide` | 可选 `topic`，默认 `all` | 写作规范、写入前 CI、调用流程、公式、链接规则、Mermaid/HTML 限制与完整示例 |
 | `list_vaults` | 无 | 仓库名称、简介、URI、状态、文档数量 |
 | `list_documents` | `vault_id`，可选 `directory/cursor/limit` | 文档 URI、相对路径、标题、版本和分页信息 |
 | `search_documents` | `query`，可选 `vault_id/cursor/limit` | 相关片段、行号、URI 和版本 |
@@ -190,6 +195,7 @@ Agent 可以调用 `get_writing_guide({})` 获取完整指南，或用 `topic` �
 | `update_document` | `uri/content/version` | 更新后的文档 URI、版本和元信息 |
 | `delete_document` | `uri/version` | 将文档移入回收站 |
 | `rename_document` | `uri/name/version` | 重命名文档文件，`name` 包含 Markdown 扩展名，返回新路径和 URI |
+| `move_document` | `uri/directory/version` | 将笔记移动到同一知识库内已有文件夹，`directory` 留空表示根目录；保留文件名和原始内容 |
 | `list_trash` | 可选 `vault_id` | 文件、文件夹和知识库的回收记录及版本 |
 | `restore_trash` | `vault_id/entry_id/version` | 恢复回收的文件或文件夹，拒绝同名覆盖 |
 | `restore_vault` | `vault_id/version` | 恢复回收的知识库或外部注册 |

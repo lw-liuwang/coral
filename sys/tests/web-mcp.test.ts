@@ -68,7 +68,7 @@ test('reading navigation follows natural sibling order and stays within the curr
 
 test('cyclic YAML properties render safely and corrupt Vault trash states do not break other pages', async () => {
   const { base, project, registry } = await fixture();
-  writeFileSync(join(project, 'cycle.md'), '---\nvalue: &value\n  self: *value\n---\n# Circular YAML');
+  writeFileSync(join(project, 'cycle.md'), '---\ntitle: Circular YAML\nvalue: &value\n  self: *value\n---\n# Circular YAML');
   const page = await fetch(base + '/document?' + new URLSearchParams({ uri: 'coral://vault/project/cycle.md' }));
   assert.equal(page.status, 200);
   assert.ok((await page.text()).includes('Circular YAML'));
@@ -79,6 +79,35 @@ test('cyclic YAML properties render safely and corrupt Vault trash states do not
   assert.equal(trash.status, 200);
   assert.ok((await trash.text()).includes('1 项回收内容无法读取'));
   assert.equal((await fetch(base)).status, 200);
+});
+
+test('notes move through Web and MCP without rewriting bytes or overwriting destinations', async () => {
+  const { base, registry, project, raw } = await fixture();
+  mkdirSync(join(project, 'archive/2026-11'), { recursive: true });
+  const doc = registry.document('coral://vault/project/docs/design.md');
+  const page = await (await fetch(base + '/move?' + new URLSearchParams({ uri: doc.uri }))).text();
+  assert.match(page, /name="directory"/);
+  assert.match(page, /value="archive\/2026-11"/);
+  const stale = await fetch(base + '/move', params({ uri: doc.uri, directory: 'archive/2026-11', version: 'stale' }));
+  assert.equal(stale.status, 409);
+  writeFileSync(join(project, 'archive/2026-11/design.md'), 'occupied');
+  const collision = await fetch(base + '/move', params({ uri: doc.uri, directory: 'archive/2026-11', version: doc.version }));
+  assert.equal(collision.status, 409);
+  assert.equal(readFileSync(join(project, 'archive/2026-11/design.md'), 'utf8'), 'occupied');
+  rmSync(join(project, 'archive/2026-11/design.md'));
+  const response = await fetch(base + '/move', params({ uri: doc.uri, directory: 'archive/2026-11', version: doc.version, from: 'document' }));
+  assert.equal(response.status, 303);
+  assert.match(response.headers.get('location')!, /archive%2F2026-11%2Fdesign.md/);
+  assert.equal((await fetch(base + '/api/document?' + new URLSearchParams({ uri: doc.uri }))).status, 404);
+  const client = new Client({ name: 'coral-move-test', version: '1.0.0' });
+  await client.connect(new StreamableHTTPClientTransport(new URL(base + '/mcp')));
+  cleanup.push(() => client.close());
+  const movedUri = 'coral://vault/project/archive/2026-11/design.md';
+  const moved = await callMcp(client, 'read_document', { uri: movedUri });
+  assert.equal(moved.version, doc.version);
+  const returned = await callMcp(client, 'move_document', { uri: movedUri, directory: '', version: moved.version });
+  assert.equal(returned.uri, 'coral://vault/project/design.md');
+  assert.deepEqual(registry.download(String(returned.uri)).bytes, Buffer.from(raw));
 });
 
 test('folder URIs and full breadcrumbs follow renames through Web and MCP', async () => {
@@ -406,7 +435,7 @@ test('MCP Streamable HTTP handshake, tools, resources, search, read and download
   cleanup.push(() => client.close());
   const listed = await client.listTools();
   const readTools = ['browse_directory', 'download_document', 'get_writing_guide', 'list_documents', 'list_trash', 'list_vaults', 'read_document', 'search_documents'];
-  const writeTools = ['create_directory', 'create_document', 'create_vault', 'delete_directory', 'delete_document', 'delete_vault', 'rename_directory', 'rename_document', 'restore_trash', 'restore_vault', 'update_document'];
+  const writeTools = ['create_directory', 'create_document', 'create_vault', 'delete_directory', 'delete_document', 'delete_vault', 'move_document', 'rename_directory', 'rename_document', 'restore_trash', 'restore_vault', 'update_document'];
   assert.deepEqual(listed.tools.map(tool => tool.name).sort(), [...readTools, ...writeTools].sort());
   for (const tool of listed.tools) {
     assert.equal(tool.annotations?.readOnlyHint, readTools.includes(tool.name));
@@ -414,7 +443,7 @@ test('MCP Streamable HTTP handshake, tools, resources, search, read and download
     assert.equal(tool.annotations?.openWorldHint, false);
     if (writeTools.includes(tool.name)) assert.equal(tool.annotations?.idempotentHint, false);
   }
-  for (const name of ['update_document', 'delete_document', 'delete_directory', 'delete_vault', 'rename_document', 'rename_directory', 'restore_trash', 'restore_vault']) {
+  for (const name of ['update_document', 'delete_document', 'delete_directory', 'delete_vault', 'move_document', 'rename_document', 'rename_directory', 'restore_trash', 'restore_vault']) {
     assert.ok(listed.tools.find(tool => tool.name === name)!.inputSchema.required?.includes('version'));
   }
   const vaults = await client.callTool({ name: 'list_vaults', arguments: {} });

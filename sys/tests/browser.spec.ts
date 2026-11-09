@@ -160,7 +160,7 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     await expect(page.locator('.page-head [data-copy]')).toHaveAttribute('data-copy', currentUri);
     await expect(page.locator('.file-list .row-actions .icon-btn')).toHaveCount(0);
     const entryActions = page.locator('.file-list .row-actions').first();
-    await expect(entryActions.locator('.btn')).toHaveCount(3);
+    await expect(entryActions.locator('.btn')).toHaveCount(4);
     await expect(entryActions).toContainText('复制链接');
     await expect(entryActions).toContainText('重命名');
     await expect(entryActions).toContainText('删除');
@@ -513,6 +513,79 @@ test('writing tools, modes, local drafts and conflict protection', async ({ page
   await expect(editor).toHaveText('浏览器未保存的内容');
   await page.getByRole('button', { name: '保存', exact: true }).click();
   await expect(page.locator('#save-error')).toContainText('文档已被修改');
+});
+
+test('move notes from the directory and document pages with collision protection', async ({ page, applicationUrl, applicationDirectory }, testInfo) => {
+  const root = join(applicationDirectory, 'obsdian/default');
+  mkdirSync(join(root, 'work/2026-11'), { recursive: true });
+  const raw = '\uFEFF---\r\ntitle: 每日记录\r\ncustom: preserved\r\n---\r\n# 每日记录\r\n\r\n需要完整保留的工作记录。\r\n';
+  writeFileSync(join(root, 'work/2026-11-6.md'), raw);
+  writeFileSync(join(root, 'work/2026-11/2026-11-6.md'), '已有文件');
+  await page.goto(applicationUrl + '/?' + new URLSearchParams({ vault: 'default', directory: 'work' }));
+  await page.getByRole('link', { name: '移动文档：每日记录', exact: true }).click();
+  const destination = page.getByRole('combobox', { name: '目标文件夹', exact: true });
+  await destination.selectOption('work/2026-11');
+  await page.getByRole('button', { name: '确认移动', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('同名');
+  await expect(destination).toHaveValue('work/2026-11');
+  expect(readFileSync(join(root, 'work/2026-11/2026-11-6.md'), 'utf8')).toBe('已有文件');
+  rmSync(join(root, 'work/2026-11/2026-11-6.md'));
+  await page.getByRole('button', { name: '确认移动', exact: true }).click();
+  await expect(page).toHaveURL(/directory=work%2F2026-11$/);
+  expect(readFileSync(join(root, 'work/2026-11/2026-11-6.md'), 'utf8')).toBe(raw);
+  expect(() => readFileSync(join(root, 'work/2026-11-6.md'))).toThrow();
+  await page.locator('.file-list').getByRole('link', { name: '每日记录', exact: true }).click();
+  await expect(page.locator('article')).toContainText('需要完整保留的工作记录。');
+  await page.getByRole('link', { name: '移动', exact: true }).click();
+  await destination.selectOption('');
+  await page.screenshot({ path: testInfo.outputPath('move-note.png'), fullPage: true });
+  await page.getByRole('button', { name: '确认移动', exact: true }).click();
+  await expect(page).toHaveURL(/uri=coral%3A%2F%2Fvault%2Fdefault%2F2026-11-6.md$/);
+  await expect(page.locator('.page-head h1')).toHaveText('每日记录');
+  expect(readFileSync(join(root, '2026-11-6.md'), 'utf8')).toBe(raw);
+});
+
+test('mouse selection is visible on the active editor line and supports copy and replace', async ({ page, applicationUrl }, testInfo) => {
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: applicationUrl });
+  await page.goto(applicationUrl + '/?vault=default');
+  await page.getByRole('link', { name: '项目设计', exact: true }).click();
+  await page.getByRole('link', { name: '编辑', exact: true }).click();
+  const editor = page.getByRole('textbox', { name: 'Markdown 正文' });
+  const original = '鼠标拖选这段文字，应该能看到清晰的选区。';
+  await editor.fill(original);
+  await editor.press('Home');
+  const before = await page.screenshot();
+  const line = (await editor.locator('.cm-line').first().boundingBox())!;
+  await page.mouse.move(line.x + 18, line.y + line.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(line.x + 160, line.y + line.height / 2, { steps: 15 });
+  await page.mouse.up();
+  const selected = await page.evaluate(() => window.getSelection()?.toString() ?? '');
+  expect(selected.length).toBeGreaterThan(3);
+  const highlight = page.locator('.cm-selectionBackground').first();
+  await expect(highlight).toBeVisible();
+  const box = (await highlight.boundingBox())!;
+  const point = { x: Math.floor(box.x + box.width / 2), y: Math.ceil(box.y) + 1 };
+  const after = await page.screenshot({ path: testInfo.outputPath('editor-mouse-selection.png') });
+  const pixels = await page.evaluate(async ({ screenshots, point }) => {
+    return Promise.all(screenshots.map(async data => {
+      const bitmap = await createImageBitmap(new Blob([Uint8Array.from(atob(data), char => char.charCodeAt(0))], { type: 'image/png' }));
+      const canvas = document.createElement('canvas');
+      canvas.width = bitmap.width; canvas.height = bitmap.height;
+      const context = canvas.getContext('2d')!;
+      context.drawImage(bitmap, 0, 0);
+      bitmap.close();
+      return Array.from(context.getImageData(point.x, point.y, 1, 1).data).slice(0, 3);
+    }));
+  }, { screenshots: [before.toString('base64'), after.toString('base64')], point });
+  // Check the painted background, since an opaque active line can hide a valid selection layer.
+  expect(pixels[0].reduce((difference, value, index) => difference + Math.abs(value - pixels[1][index]), 0)).toBeGreaterThan(30);
+  await editor.press('ControlOrMeta+c');
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(selected);
+  await page.keyboard.insertText('替换');
+  await expect(editor).toHaveText(original.replace(selected, '替换'));
+  await editor.press('ControlOrMeta+z');
+  await expect(editor).toHaveText(original);
 });
 
 test('create a knowledge base then create and upload Markdown documents', async ({ page, applicationUrl }, testInfo) => {

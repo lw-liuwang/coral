@@ -339,6 +339,54 @@ export class VaultRegistry {
     return { documents, directories, total: scan.documents.length, skipped: scan.skipped };
   }
 
+  listDirectories(vaultId: string) {
+    const vault = this.vault(vaultId);
+    const directories = [''];
+    const walk = (directory: string, prefix: string) => {
+      for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => compareNames(a.name, b.name))) {
+        if (!entry.isDirectory() || entry.isSymbolicLink() || entry.name.startsWith('.')) continue;
+        const relative = prefix + entry.name;
+        directories.push(relative);
+        walk(join(directory, entry.name), relative + '/');
+      }
+    };
+    walk(realpathSync(vault.root), '');
+    return directories;
+  }
+
+  moveDocument(uri: string, directory: string, version: string) {
+    const doc = this.document(uri);
+    if (!version) throw new AppError('缺少文档版本，请重新打开移动页面');
+    if (version !== doc.version) throw new AppError('文档已被修改，请刷新后重试', 409);
+    safeParts(directory, true);
+    const vault = this.vault(doc.vaultId);
+    const parent = directory ? this.filePath(vault, directory) : realpathSync(vault.root);
+    if (!lstatSync(parent).isDirectory()) throw new AppError('目标不是文件夹');
+    const name = basename(doc.relative);
+    const relative = (directory ? directory + '/' : '') + name;
+    if (relative === doc.relative) return doc;
+    if (readdirSync(parent).some(existing => existing.toLowerCase() === name.toLowerCase())) {
+      throw new AppError('目标文件夹已有同名文件或文件夹', 409);
+    }
+    const source = this.filePath(vault, doc.relative);
+    const target = this.filePath(vault, relative, false);
+    try {
+      // Reserve the destination without overwriting it or rewriting document bytes.
+      linkSync(source, target);
+      try {
+        if (digest(this.bytes(vault, doc.relative)) !== version) throw new AppError('文档已被修改，请刷新后重试', 409);
+        unlinkSync(source);
+      } catch (error) { unlinkSync(target); throw error; }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new AppError('目标文件夹已有同名文件或文件夹', 409);
+      if (error instanceof AppError) throw error;
+      throw new AppError('无法移动笔记，请检查目标文件夹权限和文件占用情况');
+    }
+    this.scans.delete(vault.id);
+    this.commit(vault, [doc.relative, relative], `移动：${doc.relative} → ${relative}`);
+    return this.documentAt(vault, relative);
+  }
+
   renameEntry(uri: string) {
     const { vaultId, relative } = parseUri(uri);
     const vault = this.vault(vaultId);

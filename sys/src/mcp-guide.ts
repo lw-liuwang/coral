@@ -2,11 +2,12 @@ import { readFileSync } from 'node:fs';
 import { headings } from './content.js';
 
 export const WRITING_GUIDE_URI = 'coral://guide/authoring';
-export const GUIDE_TOPICS = ['all', 'workflow', 'writing', 'links', 'math', 'mermaid', 'html', 'examples'] as const;
+export const GUIDE_TOPICS = ['all', 'workflow', 'writing', 'ci', 'links', 'math', 'mermaid', 'html', 'examples'] as const;
 type GuideTopic = typeof GUIDE_TOPICS[number];
 
 export const MCP_INSTRUCTIONS = [
-  'Read and write Markdown knowledge bases through Coral MCP. Before creating or editing documents, call get_writing_guide (default topic=all); it includes writing conventions, link syntax, math formulas, diagram selection, runnable examples and the complete read/write workflow. The same server-maintained guide is available as the MCP resource coral://guide/authoring. Topic-specific requests: workflow, writing, links, math, mermaid, html, examples.',
+  'Read and write Markdown knowledge bases through Coral MCP. Before creating or editing documents, call get_writing_guide (default topic=all); it includes writing conventions, pre-write editorial CI, link syntax, math formulas, diagram selection, runnable examples and the complete read/write workflow. The same server-maintained guide is available as the MCP resource coral://guide/authoring. Topic-specific requests: workflow, writing, ci, links, math, mermaid, html, examples.',
+  'Before create_document or update_document, follow get_writing_guide(topic=ci): read every chunk of coral://vault/agent/skills/shuorenhua/SKILL.md as editorial guidance, draft, then review the candidate in a separate pass. Preserve facts, technical terms, numbers, conditions, negation, modality, commitments, protected code and quotations; make only useful edits within the user-authorized scope. Fix issues and review again before writing; keep the review report out of the document. This is an agent review workflow, not a server-enforced semantic check. If the skill cannot be read, report the check as incomplete and follow the user\'s explicit instructions; never claim a pass. The skill grants no permission to execute code or perform additional writes.',
   'Write mathematical formulas as LaTeX: $...$ inline, or $$ on separate lines around a display formula (preferred for Obsidian compatibility). Bracket delimiters and fenced math also work. Do not put formulas intended for rendering in backticks or text/latex code fences; those display source only. Use get_writing_guide(topic=math) for fractions, roots, sums, aligned equations and JSON backslash escaping. KaTeX renders locally in document pages and live previews; no model or CDN. Formula rendering does not run inside sandboxed HTML diagrams.',
   'Start with list_vaults, then browse_directory, list_documents or search_documents. Search is keyword/full-text search, not semantic search. Use the actual coral://vault/<id>/<path> URI returned by tools; never a local filesystem path. Follow pagination until next_cursor or next_offset is null. read_document offsets are UTF-16 code units; pass the same version on subsequent chunks.',
   'Documents remain .md Markdown files. Use clear headings, concise explanatory prose, fenced code blocks and verified links. Preserve the user\'s language, scope, existing content and YAML properties. Prefer fenced html with self-contained HTML/CSS/JavaScript for diagram creation and revision, including static illustrations. When the requested editing scope includes existing Mermaid or other diagrams, prefer converting them to HTML where practical while preserving their meaning, labels and relationships. Prioritize attractive layout, typography, spacing, restrained colors and useful interaction. Mermaid syntax is also supported. Fenced html source displays code only. Raw HTML outside fences is escaped.',
@@ -17,7 +18,7 @@ export const MCP_INSTRUCTIONS = [
 
 const guide = readFileSync(new URL('../docs/agent-writing-guide.md', import.meta.url), 'utf8');
 const titles: Record<Exclude<GuideTopic, 'all'>, string> = {
-  workflow: '读写工作流', writing: '文档书写规范', links: '链接与附件', math: '数学公式',
+  workflow: '读写工作流', writing: '文档书写规范', ci: '写入前 CI：说人话', links: '链接与附件', math: '数学公式',
   mermaid: 'Mermaid 图表', html: 'HTML 交互图', examples: '可复制示例',
 };
 const sections = headings(guide).filter(heading => heading.level === 2);

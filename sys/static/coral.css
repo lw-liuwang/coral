@@ -269,6 +269,7 @@ mark { background: #f7e2a8; padding: 0 0.1em; border-radius: 3px; }
 .vault-list p { margin: 0 0 0.3rem; }
 .vault-list code { color: var(--muted); font-size: 0.85rem; }
 .vault-description { flex: 1; }
+.vault-list .row-actions .btn { padding: 0.2rem 0.6rem; font-size: 0.82rem; }
 .trash-list { list-style: none; padding: 0; margin: 0; }
 .trash-list li { display: flex; align-items: center; gap: 1rem; padding: 1rem 0; border-bottom: 1px solid var(--border); }
 .trash-description { flex: 1; min-width: 0; overflow-wrap: anywhere; }
@@ -317,9 +318,11 @@ mark { background: #f7e2a8; padding: 0 0.1em; border-radius: 3px; }
 .writing-surface .cm-line { padding: 0 24px 0 16px; }
 .writing-surface .cm-gutters { background: #fafbfc; border-right: 0; color: #9aa3ad; font-size: 12px; }
 .writing-surface .cm-lineNumbers .cm-gutterElement { min-width: 36px; padding-right: 8px; }
-.writing-surface .cm-activeLine, .writing-surface .cm-activeLineGutter { background: #f1f6f9; }
+.writing-surface .cm-activeLine { background: #cceeff33; }
+.writing-surface .cm-activeLineGutter { background: #f1f6f9; }
 .writing-surface .cm-focused { outline: none; }
-.writing-surface .cm-selectionBackground, .writing-surface .cm-focused .cm-selectionBackground { background: #cde2ee; }
+.writing-surface .cm-selectionBackground { background: #dce6ed; }
+.writing-surface .cm-editor.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground { background: #b9d9ee; }
 .writing-surface .preview { min-width: 0; max-width: none; max-height: none; margin: 0; border: 0; border-left: 1px solid var(--border); border-radius: 0; padding: 28px 30px 80px; overflow: auto; overflow-wrap: anywhere; }
 .writing-surface .preview > :first-child { margin-top: 0; }
 .writing-surface[data-mode="write"] .editor-grid, .writing-surface[data-mode="preview"] .editor-grid { grid-template-columns: minmax(0, 1fr); }

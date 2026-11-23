@@ -5,7 +5,9 @@ import { execFileSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { z } from 'zod';
 import type { Config } from './config.js';
-import { AppError, headings, parseMarkdown, parseUri, resourceUri, safeParts, serialize, titleFor } from './content.js';
+import { AppError, decodedPathCandidates, hasFrontmatter, headings, parseMarkdown, parseUri, resourceUri, safeParts, serialize, titleFor } from './content.js';
+import { rewriteRelocationLinks, type UnresolvedLink } from './relocation-links.js';
+import { cjkSplit, ftsQuery, matchesSearchText, rankSearchDocument, searchSnippet, splitSearchQuery } from './search-query.js';
 
 export const MAX_FILE_BYTES = 16 * 1024 * 1024;
 export interface Vault { id: string; name: string; description: string; root: string }
@@ -14,13 +16,22 @@ export interface Document {
   version: string; size: number; raw: string; body: string;
   metadata: Record<string, unknown>; warning?: string;
 }
+export interface RelocationOptions { updateLinks?: boolean }
+export interface RelocationReport {
+  operation_id: string;
+  updated_documents: { uri: string; version: string }[];
+  unresolved_links: UnresolvedLink[];
+}
+type RelocationResult<T> = T & Partial<RelocationReport>;
+const relocationReportSchema = z.object({ operation_id: z.string().uuid(),
+  updated_documents: z.array(z.object({ uri: z.string(), version: z.string() })),
+  unresolved_links: z.array(z.object({ uri: z.string(), target: z.string(), reason: z.string() })) });
 export function publicDocument(doc: Document) {
   return { uri: doc.uri, vault_id: doc.vaultId, title: doc.title, path: doc.relative,
     size_bytes: doc.size, version: doc.version, mime_type: 'text/markdown' };
 }
 const digest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 const today = () => new Date().toLocaleDateString('en-CA');
-const cjkSplit = (text: string) => text.toLowerCase().replace(/([\u3000-\u9fff\uff00-\uffef])/g, ' $1 ');
 const vaultStateSchema = z.object({ id: z.string(), name: z.string(), description: z.string(), root: z.string(),
   source: z.enum(['managed', 'external']), state: z.enum(['trash', 'removed']), deleted_at: z.string().datetime() });
 type VaultState = z.infer<typeof vaultStateSchema>;
@@ -354,7 +365,21 @@ export class VaultRegistry {
     return directories;
   }
 
-  moveDocument(uri: string, directory: string, version: string) {
+  moveDocument(uri: string, directory: string, version: string, options: RelocationOptions = {}): RelocationResult<Document> {
+    if (!options.updateLinks) return this.moveDocumentOnly(uri, directory, version);
+    const entry = this.renameEntry(uri);
+    if (entry.kind !== 'document') throw new AppError('仅支持移动笔记');
+    safeParts(directory, true);
+    const relative = (directory ? directory + '/' : '') + entry.name;
+    return this.maintainRelocationLinks(entry, relative, version,
+      () => this.moveDocumentOnly(uri, directory, version, false),
+      () => {
+        const current = this.document(resourceUri(entry.vaultId, relative));
+        this.moveDocumentOnly(current.uri, entry.relative.split('/').slice(0, -1).join('/'), current.version, false);
+      });
+  }
+
+  private moveDocumentOnly(uri: string, directory: string, version: string, recordHistory = true) {
     const doc = this.document(uri);
     if (!version) throw new AppError('缺少文档版本，请重新打开移动页面');
     if (version !== doc.version) throw new AppError('文档已被修改，请刷新后重试', 409);
@@ -383,7 +408,7 @@ export class VaultRegistry {
       throw new AppError('无法移动笔记，请检查目标文件夹权限和文件占用情况');
     }
     this.scans.delete(vault.id);
-    this.commit(vault, [doc.relative, relative], `移动：${doc.relative} → ${relative}`);
+    if (recordHistory) this.commit(vault, [doc.relative, relative], `移动：${doc.relative} → ${relative}`);
     return this.documentAt(vault, relative);
   }
 
@@ -397,7 +422,22 @@ export class VaultRegistry {
       version: directory ? this.directorySnapshot(target).version : digest(this.bytes(vault, relative)) };
   }
 
-  rename(uri: string, name: string, version: string) {
+  rename(uri: string, name: string, version: string, options: RelocationOptions = {}): RelocationResult<ReturnType<VaultRegistry['renameEntry']>> {
+    if (!options.updateLinks) return this.renameOnly(uri, name, version);
+    const entry = this.renameEntry(uri);
+    name = name.trim();
+    safeParts(name);
+    const parent = entry.relative.split('/').slice(0, -1).join('/');
+    const relative = (parent ? parent + '/' : '') + name;
+    return this.maintainRelocationLinks(entry, relative, version,
+      () => this.renameOnly(uri, name, version, false),
+      () => {
+        const current = this.renameEntry(resourceUri(entry.vaultId, relative));
+        this.renameOnly(current.uri, entry.name, current.version, false);
+      });
+  }
+
+  private renameOnly(uri: string, name: string, version: string, recordHistory = true) {
     const entry = this.renameEntry(uri);
     if (!version) throw new AppError('缺少版本，请重新打开重命名页面');
     if (version !== entry.version) throw new AppError('内容已修改，请刷新后重试', 409);
@@ -437,9 +477,145 @@ export class VaultRegistry {
         throw error;
       }
       this.scans.delete(vault.id);
-      this.commit(vault, [entry.relative, relative], `重命名：${entry.relative} → ${relative}`);
+      if (recordHistory) this.commit(vault, [entry.relative, relative], `重命名：${entry.relative} → ${relative}`);
     }
     return this.renameEntry(resourceUri(vault.id, relative));
+  }
+
+  relocationReport(vaultId: string, operationId: string): RelocationReport {
+    if (!z.string().uuid().safeParse(operationId).success) throw new AppError('整理操作编号无效');
+    const vault = this.vault(vaultId);
+    try {
+      const folder = join(this.backupRoot(vault, false), operationId), path = join(folder, 'state.json');
+      if (lstatSync(folder).isSymbolicLink() || !lstatSync(folder).isDirectory() || lstatSync(path).isSymbolicLink()
+        || !lstatSync(path).isFile() || lstatSync(path).size > MAX_FILE_BYTES) throw new Error();
+      const state: unknown = JSON.parse(readFileSync(path, 'utf8'));
+      const parsed = z.object({ status: z.literal('complete'), report: relocationReportSchema }).parse(state);
+      if (parsed.report.operation_id !== operationId) throw new Error();
+      return parsed.report;
+    } catch { throw new AppError('整理结果不存在或尚未完成', 404); }
+  }
+
+  private relocationInventory(vault: Vault) {
+    const entries = new Map<string, { directory: boolean; symbolic: boolean; stamp: string }>();
+    const walk = (path: string, prefix: string) => {
+      for (const entry of readdirSync(path, { withFileTypes: true })) {
+        if ((!prefix && ['.git', '.obsidian', '.coral-backups', '.trash'].includes(entry.name)) || /^\.coral-.*\.tmp$/.test(entry.name)) continue;
+        const relative = prefix + entry.name;
+        const stat = lstatSync(join(path, entry.name), { bigint: true });
+        entries.set(relative, { directory: stat.isDirectory(), symbolic: stat.isSymbolicLink(), stamp: [stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs, stat.mode].join(':') });
+        if (stat.isDirectory()) walk(join(path, entry.name), relative + '/');
+      }
+    };
+    walk(realpathSync(vault.root), '');
+    return entries;
+  }
+
+  private maintainRelocationLinks<T extends { uri: string; version: string }>(entry: ReturnType<VaultRegistry['renameEntry']>,
+    relative: string, version: string, relocate: () => T, undo: () => void): T & RelocationReport {
+    if (!version || version !== entry.version) throw new AppError('内容已修改，请刷新后重试', 409);
+    const vault = this.vault(entry.vaultId);
+    const scan = this.scan(vault.id);
+    if (scan.skipped || scan.documents.some(doc => doc.warning)) throw new AppError('部分笔记无法完整读取，尚未整理；请先修复后重试', 409);
+    const inventory = this.relocationInventory(vault);
+    const mapping = new Map([...inventory.keys()].map(path => [path,
+      path === entry.relative ? relative : entry.kind === 'directory' && path.startsWith(entry.relative + '/') ? relative + path.slice(entry.relative.length) : path]));
+    const linkMapping = new Map([...mapping].filter(([path]) => {
+      const entry = inventory.get(path)!;
+      return !entry.symbolic && path.split('/').every(part => !part.startsWith('.'));
+    }));
+    const filePaths = new Set([...linkMapping.keys()].filter(path => !inventory.get(path)!.directory));
+    const rewrites = rewriteRelocationLinks(scan.documents, linkMapping, filePaths);
+    const operationId = randomUUID(), folder = join(this.backupRoot(vault), operationId);
+    mkdirSync(join(folder, 'originals'), { recursive: true });
+    const documentsByPath = new Map(scan.documents.map(doc => [doc.relative, doc]));
+    const files = rewrites.documents.map((change, index) => ({ ...change, bytes: Buffer.from(change.raw),
+      backup: join(folder, 'originals', String(index) + '.md'), applied: false, attempted: false }));
+    const filesByUri = new Map(files.map(file => [file.original.uri, file]));
+    for (const file of files) {
+      if (file.bytes.length > MAX_FILE_BYTES) throw new AppError('更新链接后文档超过 16 MiB 大小限制', 413);
+      writeFileSync(file.backup, this.bytes(vault, file.original.relative), { flag: 'wx' });
+    }
+    const report: RelocationReport = { operation_id: operationId, updated_documents: [], unresolved_links: rewrites.unresolved_links };
+    const state = { status: 'prepared', original: entry.relative, destination: relative, report,
+      files: files.map(file => ({ original: file.original.relative, destination: file.relative, before: file.original.version, after: digest(file.bytes) })) };
+    const saveState = () => {
+      const temporary = join(folder, randomUUID() + '.tmp');
+      writeFileSync(temporary, JSON.stringify(state) + '\n', { flag: 'wx' });
+      renameSync(temporary, join(folder, 'state.json'));
+    };
+    let relocated = false;
+    const assertState = () => {
+      const current = this.relocationInventory(vault);
+      if (current.size !== inventory.size) throw new AppError('整理期间知识库目录发生变化，请刷新后重试', 409);
+      for (const [path, before] of inventory) {
+        const expectedPath = relocated ? mapping.get(path)! : path;
+        const actual = current.get(expectedPath);
+        if (!actual || actual.directory !== before.directory || actual.symbolic !== before.symbolic
+          || (!before.directory && !documentsByPath.has(path) && actual.stamp !== before.stamp)) {
+          throw new AppError('整理期间知识库文件发生变化，请刷新后重试', 409);
+        }
+      }
+      for (const doc of scan.documents) {
+        const file = filesByUri.get(doc.uri);
+        const expected = file?.applied ? digest(file.bytes) : doc.version;
+        const path = relocated ? mapping.get(doc.relative)! : doc.relative;
+        if (digest(this.bytes(vault, path)) !== expected) throw new AppError('整理期间文档已被其他程序修改，请刷新后重试', 409);
+      }
+    };
+    saveState();
+    try {
+      assertState();
+      const result = relocate();
+      relocated = true;
+      state.status = 'applying'; saveState();
+      assertState();
+      for (const [index, file] of files.entries()) {
+        file.attempted = true;
+        try {
+          this.replaceDocumentBytes(vault, file.relative, file.bytes, file.original.version, join(folder, 'inodes', String(index)));
+          file.applied = true;
+        } catch (error) {
+          try { file.applied = digest(this.bytes(vault, file.relative)) === digest(file.bytes); } catch { /* Preserve the original failure. */ }
+          throw error;
+        }
+        saveState();
+      }
+      assertState();
+      report.updated_documents = files.map(file => ({ uri: resourceUri(vault.id, file.relative), version: digest(file.bytes) }));
+      state.status = 'complete'; saveState();
+      this.scans.delete(vault.id);
+      this.commit(vault, [...new Set([entry.relative, relative, ...files.map(file => file.relative)])], `整理：${entry.relative} → ${relative}`);
+      return { ...result, ...('raw' in result ? this.document(result.uri) : this.renameEntry(result.uri)), ...report };
+    } catch (error) {
+      if (!relocated && relative !== entry.relative && !existsSync(join(vault.root, entry.relative)) && existsSync(join(vault.root, relative))) relocated = true;
+      const conflicts: { uri: string; reason: string }[] = [];
+      for (const file of [...files].reverse()) {
+        if (!file.applied) continue;
+        const uri = resourceUri(vault.id, file.relative);
+        try {
+          this.replaceDocumentBytes(vault, file.relative, readFileSync(file.backup), digest(file.bytes));
+          file.applied = false;
+        } catch { conflicts.push({ uri, reason: '内容已被外部修改或无法恢复，原文件备份已保留' }); }
+      }
+      for (const file of files) {
+        if (!file.attempted || file.applied) continue;
+        try { if (digest(this.bytes(vault, file.relative)) === file.original.version) continue; } catch { /* Report a missing or replaced file too. */ }
+        conflicts.push({ uri: resourceUri(vault.id, file.relative), reason: '写入时文件被外部替换或无法恢复，原文件备份已保留' });
+      }
+      if (relocated && relative !== entry.relative) {
+        try { assertState(); undo(); relocated = false; }
+        catch { conflicts.push({ uri: resourceUri(vault.id, relative), reason: '原路径已占用或整理后的文件发生变化，未自动移回' }); }
+      }
+      state.status = conflicts.length ? 'partial' : 'rolled_back';
+      try { saveState(); } catch { /* The prepared originals and earlier state remain available for recovery. */ }
+      this.scans.delete(vault.id);
+      const message = error instanceof AppError ? error.message : '无法完成整理';
+      throw new AppError(message + (conflicts.length ? '；部分更改未撤回，整理记录及可用备份已保留' : '；本次整理已撤回'), error instanceof AppError ? error.status : 500,
+        { recovery: { operation_id: operationId, partial: conflicts.length > 0, conflicts,
+          affected_uris: [...new Set([resourceUri(vault.id, relocated ? relative : entry.relative), ...conflicts.map(conflict => conflict.uri),
+            ...files.filter(file => file.applied).map(file => resourceUri(vault.id, file.relative))])] } });
+    }
   }
 
   readDocument(uri: string, options: { offset?: number; maxChars?: number; heading?: string; version?: string } = {}) {
@@ -489,7 +665,8 @@ export class VaultRegistry {
           documents.set(doc.uri, doc);
           if (this.indexed.get(doc.uri) !== doc.version) {
             if (this.indexed.has(doc.uri)) remove.run(doc.uri);
-            insert.run(doc.uri, this.fts ? cjkSplit(doc.title) : doc.title, this.fts ? cjkSplit(doc.body) : doc.body);
+            const searchableTitle = doc.title + '\n' + doc.relative;
+            insert.run(doc.uri, this.fts ? cjkSplit(searchableTitle) : searchableTitle, this.fts ? cjkSplit(doc.body) : doc.body);
           }
         }
       }
@@ -497,18 +674,13 @@ export class VaultRegistry {
       this.db.exec('COMMIT');
       this.indexed = new Map([...documents.values()].map(doc => [doc.uri, doc.version]));
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
-    const match = '"' + cjkSplit(query).replaceAll('"', '""') + '"';
-    const rows = this.fts
-      ? this.db.prepare('SELECT uri FROM search WHERE search MATCH ? ORDER BY bm25(search)').all(match)
-      : this.db.prepare('SELECT uri FROM search WHERE instr(lower(title), lower(?)) > 0 OR instr(lower(body), lower(?)) > 0').all(query, query);
-    const results = rows.slice(cursor, cursor + limit).map(row => {
-      const doc = documents.get(row.uri as string)!;
-      const at = doc.body.toLowerCase().indexOf(query.toLowerCase());
-      const begin = Math.max(0, at - 100), end = Math.min(doc.body.length, Math.max(at, 0) + query.length + 250);
-      return { ...publicDocument(doc), snippet: doc.body.slice(begin, end),
-        start_line: doc.raw.slice(0, Math.max(0, doc.raw.indexOf(doc.body)) + begin).split('\n').length };
-    });
-    return { results, total: rows.length, next_cursor: cursor + limit < rows.length ? cursor + limit : null,
+    const terms = splitSearchQuery(query);
+    const candidates = this.fts
+      ? this.db.prepare('SELECT uri FROM search WHERE search MATCH ? ORDER BY bm25(search), uri').all(ftsQuery(query)).map(row => documents.get(row.uri as string)!)
+      : [...documents.values()].filter(doc => terms.every(term => matchesSearchText(doc.title + '\n' + doc.relative, [term]) || matchesSearchText(doc.body, [term]))).sort((a, b) => a.uri.localeCompare(b.uri));
+    candidates.sort((a, b) => rankSearchDocument(a, terms) - rankSearchDocument(b, terms));
+    const results = candidates.slice(cursor, cursor + limit).map(doc => ({ ...publicDocument(doc), ...searchSnippet(doc.raw, doc.body, terms) }));
+    return { results, total: candidates.length, next_cursor: cursor + limit < candidates.length ? cursor + limit : null,
       unavailable_vaults: unavailable, skipped_documents: skipped };
   }
 
@@ -553,23 +725,37 @@ export class VaultRegistry {
     if (version && version !== old.version) throw new AppError('文档已被修改，请重新打开后再保存', 409);
     if (Buffer.byteLength(raw) > MAX_FILE_BYTES) throw new AppError('文档超过 16 MiB 大小限制', 413);
     const parsed = parseMarkdown(raw);
-    const metadata = { ...(/^(?:\uFEFF)?---\r?\n/.test(raw) ? parsed.metadata : old.metadata), updated: today() };
-    const target = this.filePath(this.vault(old.vaultId), old.relative);
+    const metadata = { ...(hasFrontmatter(raw) ? parsed.metadata : old.metadata), updated: today() };
+    this.replaceDocumentBytes(this.vault(old.vaultId), old.relative, Buffer.from(serialize(metadata, parsed.body)), old.version);
+    this.commit(this.vault(old.vaultId), [old.relative], `页面：编辑 ${old.title}`);
+    return this.document(uri);
+  }
+
+  private backupRoot(vault: Vault, create = true) {
+    const root = join(realpathSync(vault.root), '.coral-backups');
+    if (create) {
+      try { mkdirSync(root); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+    }
+    if (lstatSync(root).isSymbolicLink() || !lstatSync(root).isDirectory()) throw new AppError('文档备份目录不可用');
+    return root;
+  }
+
+  private replaceDocumentBytes(vault: Vault, relative: string, bytes: Buffer, version: string, preparedBackup?: string) {
+    if (bytes.length > MAX_FILE_BYTES) throw new AppError('文档超过 16 MiB 大小限制', 413);
+    const target = this.filePath(vault, relative);
+    if (digest(this.bytes(vault, relative)) !== version) throw new AppError('文档已被修改，请重新打开后再保存', 409);
     const temporary = join(dirname(target), `.coral-${randomUUID()}.tmp`);
-    const backupRoot = join(realpathSync(this.vault(old.vaultId).root), '.coral-backups');
-    try { mkdirSync(backupRoot); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
-    if (lstatSync(backupRoot).isSymbolicLink() || !lstatSync(backupRoot).isDirectory()) throw new AppError('文档备份目录不可用');
-    const backupDirectory = join(backupRoot, randomUUID());
+    const backupDirectory = preparedBackup ?? join(this.backupRoot(vault), randomUUID());
     const backup = join(backupDirectory, basename(target));
     try {
-      writeFileSync(temporary, serialize(metadata, parsed.body), { flag: 'wx' });
-      if (this.document(uri).version !== old.version) throw new AppError('文档已被修改，请重新打开后再保存', 409);
+      writeFileSync(temporary, bytes, { flag: 'wx' });
+      if (digest(this.bytes(vault, relative)) !== version) throw new AppError('文档已被修改，请重新打开后再保存', 409);
       mkdirSync(backupDirectory, { recursive: true });
       // Move the original inode aside before exclusive creation. Keep it for late writes through external file descriptors.
       renameSync(target, backup);
       try {
-        if (!lstatSync(backup).isFile() || digest(readFileSync(backup)) !== old.version) throw new AppError('文档已被修改，原文件已保留，请重新打开', 409);
+        if (!lstatSync(backup).isFile() || digest(readFileSync(backup)) !== version) throw new AppError('文档已被修改，原文件已保留，请重新打开', 409);
         linkSync(temporary, target);
       } catch (error) {
         try { linkSync(backup, target); } catch { /* A concurrent writer owns the destination; preserve both copies. */ }
@@ -577,8 +763,6 @@ export class VaultRegistry {
         throw error;
       }
     } finally { if (existsSync(temporary)) unlinkSync(temporary); }
-    this.commit(this.vault(old.vaultId), [old.relative], `页面：编辑 ${old.title}`);
-    return this.document(uri);
   }
 
   delete(uri: string, version?: string) {
@@ -771,7 +955,13 @@ export class VaultRegistry {
     const mime: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.avif': 'image/avif' };
     const contentType = mime[extname(relative).toLowerCase()];
     if (!contentType) throw new AppError('附件不存在', 404);
-    const target = this.filePath(this.vault(vaultId), relative);
+    const vault = this.vault(vaultId);
+    let target: string | undefined;
+    for (const candidate of decodedPathCandidates(relative)) {
+      try { target = this.filePath(vault, candidate); break; }
+      catch (error) { if (!(error instanceof AppError) || error.status !== 404) throw error; }
+    }
+    if (!target) throw new AppError('附件不存在', 404);
     let descriptor: number | undefined;
     try {
       descriptor = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW);

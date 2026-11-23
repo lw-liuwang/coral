@@ -6,12 +6,13 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { hostHeaderValidation } from '@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js';
 import { z } from 'zod';
 import type { Config } from './config.js';
-import { AppError, parseMarkdown, safeParts, titleFor } from './content.js';
+import { AppError, hasFrontmatter, parseMarkdown, safeParts, titleFor } from './content.js';
 import { createMcpServer } from './mcp.js';
 import { renderMarkdown, viewUrl } from './markdown.js';
 import { katexAssetDirectory } from './math.js';
-import { MAX_FILE_BYTES, VaultRegistry } from './vault.js';
-import { documentPage, editPage, editorStyleNonce, errorPage, home, lintPage, movePage, newDirectory, newPage, newVault, renamePage, searchPage, trashPage, vaultCatalog } from './views.js';
+import { MAX_FILE_BYTES, VaultRegistry, type RelocationReport } from './vault.js';
+import { documentAnchor, documentPage, editPage, editorStyleNonce, errorPage, home, lintPage, movePage, newDirectory, newPage, newVault, renamePage, searchPage, trashPage, vaultCatalog } from './views.js';
+import { searchReturn, withSearchReturn } from './web-context.js';
 
 const base = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const text = (value: unknown, fallback = '') => typeof value === 'string' ? value : fallback;
@@ -21,6 +22,23 @@ const uri = (request: Request) => text(request.query.uri ?? request.body?.uri);
 export function createApp(config: Config) {
   const app = express();
   const registry = new VaultRegistry(config);
+  const operationReport = (vaultId: string, value: unknown) => {
+    if (!value) return;
+    try { return registry.relocationReport(vaultId, text(value)); } catch { return; }
+  };
+  const operationUrl = (url: string, report: Partial<RelocationReport>) => {
+    if (!report.operation_id || (!report.updated_documents?.length && !report.unresolved_links?.length)) return url;
+    const target = new URL(url, 'http://coral.local');
+    target.searchParams.set('operation', report.operation_id);
+    return target.pathname + target.search + target.hash;
+  };
+  const relocatedReturn = (returnTo: string | undefined, oldUri: string, newUri: string) => {
+    const valid = searchReturn(returnTo);
+    if (!valid) return;
+    const target = new URL(valid, 'http://coral.local');
+    if (target.hash === '#' + documentAnchor(oldUri)) target.hash = documentAnchor(newUri);
+    return target.pathname + target.search + target.hash;
+  };
   app.disable('x-powered-by');
   app.use(express.json({ limit: '18mb' }));
   app.use(express.urlencoded({ extended: false, limit: '18mb' }));
@@ -52,7 +70,7 @@ export function createApp(config: Config) {
 
   const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_FILE_BYTES, files: 20, fields: 5 } });
   app.get('/', (req, res) => res.send(req.query.vault === undefined ? vaultCatalog(registry, req.query.trashed === '1') : home(registry, text(req.query.vault, 'default'), {
-    upload: integer(req.query.upload), rejected: integer(req.query.rejected), directory: text(req.query.directory), deleted: req.query.deleted === '1',
+    upload: integer(req.query.upload), rejected: integer(req.query.rejected), directory: text(req.query.directory), deleted: req.query.deleted === '1', operation: operationReport(text(req.query.vault, 'default'), req.query.operation),
   })));
   app.get('/vaults/new', (_req, res) => res.send(newVault(registry)));
   app.post('/vaults/delete', (req, res) => {
@@ -98,12 +116,13 @@ export function createApp(config: Config) {
   app.post('/new', (req, res) => {
     const vaultId = text(req.body.vault, 'default');
     try {
-      const doc = registry.create(vaultId, text(req.body.title), text(req.body.content), {}, undefined, text(req.body.directory));
+      const parsed = parseMarkdown(text(req.body.content));
+      const doc = registry.create(vaultId, text(req.body.title), parsed.body, parsed.metadata, undefined, text(req.body.directory));
       if (req.get('accept') === 'application/json') { res.json({ uri: doc.uri, version: doc.version, url: viewUrl(doc.uri) }); return; }
       res.redirect(303, viewUrl(doc.uri));
     } catch (error) {
       if (!(error instanceof AppError)) throw error;
-      if (req.get('accept') === 'application/json') { res.status(error.status).json({ error: error.message }); return; }
+      if (req.get('accept') === 'application/json') { res.status(error.status).json({ error: error.message, ...error.details }); return; }
       res.status(error.status).send(newPage(registry, vaultId, { title: text(req.body.title), directory: text(req.body.directory), content: text(req.body.content), error: error.message }));
     }
   });
@@ -129,52 +148,59 @@ export function createApp(config: Config) {
     }
     res.redirect(303, '/?' + new URLSearchParams({ vault: vaultId, upload: String(saved), rejected: String(rejected), directory }));
   });
-  app.get('/document', (req, res) => res.send(documentPage(registry, registry.document(uri(req)))));
-  app.get('/rename', (req, res) => res.send(renamePage(registry, registry.renameEntry(uri(req)), { from: text(req.query.from) })));
+  app.get('/document', (req, res) => {
+    const doc = registry.document(uri(req));
+    res.send(documentPage(registry, doc, { returnTo: searchReturn(req.query.return_to), operation: operationReport(doc.vaultId, req.query.operation) }));
+  });
+  app.get('/rename', (req, res) => res.send(renamePage(registry, registry.renameEntry(uri(req)), { from: text(req.query.from), returnTo: searchReturn(req.query.return_to) })));
   app.post('/rename', (req, res) => {
     const entry = registry.renameEntry(uri(req));
-    const fields = { name: text(req.body.name), version: text(req.body.version), from: text(req.body.from) };
+    const fields = { name: text(req.body.name), version: text(req.body.version), from: text(req.body.from), returnTo: searchReturn(req.body.return_to) };
     try {
-      const renamed = registry.rename(entry.uri, fields.name, fields.version);
+      const renamed = registry.rename(entry.uri, fields.name, fields.version, { updateLinks: true });
       const directory = fields.from === 'directory' && renamed.kind === 'directory' ? renamed.relative : renamed.relative.split('/').slice(0, -1).join('/');
-      const url = fields.from === 'document' && renamed.kind === 'document' ? viewUrl(renamed.uri)
-        : '/?' + new URLSearchParams({ vault: renamed.vaultId, directory });
+      const url = operationUrl(fields.from === 'document' && renamed.kind === 'document' ? withSearchReturn(viewUrl(renamed.uri), relocatedReturn(fields.returnTo, entry.uri, renamed.uri))
+        : '/?' + new URLSearchParams({ vault: renamed.vaultId, directory }) + (fields.from === 'directory' ? '' : '#' + documentAnchor(renamed.uri)), renamed);
       if (req.get('accept') === 'application/json') { res.json({ ...renamed, url }); return; }
       res.redirect(303, url);
     } catch (error) {
       if (!(error instanceof AppError)) throw error;
-      if (req.get('accept') === 'application/json') { res.status(error.status).json({ error: error.message }); return; }
-      res.status(error.status).send(renamePage(registry, entry, { ...fields, error: error.message }));
+      if (req.get('accept') === 'application/json') { res.status(error.status).json({ error: error.message, ...error.details }); return; }
+      if (error.details?.recovery?.partial) { res.status(error.status).send(errorPage(registry, error.message, { details: error.details, vaultId: entry.vaultId })); return; }
+      res.status(error.status).send(renamePage(registry, entry, { ...fields, error: error.message, details: error.details }));
     }
   });
-  app.get('/move', (req, res) => res.send(movePage(registry, registry.document(uri(req)), { from: text(req.query.from) })));
+  app.get('/move', (req, res) => res.send(movePage(registry, registry.document(uri(req)), { from: text(req.query.from), returnTo: searchReturn(req.query.return_to) })));
   app.post('/move', (req, res) => {
     const doc = registry.document(uri(req));
-    const fields = { directory: text(req.body.directory), version: text(req.body.version), from: text(req.body.from) };
+    const fields = { directory: text(req.body.directory), version: text(req.body.version), from: text(req.body.from), returnTo: searchReturn(req.body.return_to) };
     try {
-      const moved = registry.moveDocument(doc.uri, fields.directory, fields.version);
-      const url = fields.from === 'document' ? viewUrl(moved.uri)
-        : '/?' + new URLSearchParams({ vault: moved.vaultId, directory: fields.directory });
-      if (req.get('accept') === 'application/json') { res.json({ uri: moved.uri, version: moved.version, url }); return; }
+      const moved = registry.moveDocument(doc.uri, fields.directory, fields.version, { updateLinks: true });
+      const url = operationUrl(fields.from === 'document' ? withSearchReturn(viewUrl(moved.uri), relocatedReturn(fields.returnTo, doc.uri, moved.uri))
+        : '/?' + new URLSearchParams({ vault: moved.vaultId, directory: fields.directory }) + '#' + documentAnchor(moved.uri), moved);
+      if (req.get('accept') === 'application/json') { res.json({ uri: moved.uri, version: moved.version, updated_documents: moved.updated_documents, unresolved_links: moved.unresolved_links, operation_id: moved.operation_id, url }); return; }
       res.redirect(303, url);
     } catch (error) {
       if (!(error instanceof AppError)) throw error;
-      if (req.get('accept') === 'application/json') { res.status(error.status).json({ error: error.message }); return; }
-      res.status(error.status).send(movePage(registry, doc, { ...fields, error: error.message }));
+      if (req.get('accept') === 'application/json') { res.status(error.status).json({ error: error.message, ...error.details }); return; }
+      if (error.details?.recovery?.partial) { res.status(error.status).send(errorPage(registry, error.message, { details: error.details, vaultId: doc.vaultId })); return; }
+      res.status(error.status).send(movePage(registry, doc, { ...fields, error: error.message, details: error.details }));
     }
   });
-  app.get('/edit', (req, res) => res.send(editPage(registry, registry.document(uri(req)))));
+  app.get('/edit', (req, res) => res.send(editPage(registry, registry.document(uri(req)), { returnTo: searchReturn(req.query.return_to) })));
   app.post('/edit', (req, res) => {
     if (!text(req.body.version)) throw new AppError('缺少文档版本，请重新打开编辑页');
+    const returnTo = searchReturn(req.body.return_to);
     try {
       const doc = registry.update(uri(req), text(req.body.content), text(req.body.version));
-      if (req.get('accept') === 'application/json') { res.json({ uri: doc.uri, version: doc.version, url: viewUrl(doc.uri) }); return; }
-      res.redirect(303, viewUrl(doc.uri));
+      const url = withSearchReturn(viewUrl(doc.uri), returnTo);
+      if (req.get('accept') === 'application/json') { res.json({ uri: doc.uri, version: doc.version, url }); return; }
+      res.redirect(303, url);
     } catch (error) {
       if (!(error instanceof AppError)) throw error;
-      if (req.get('accept') === 'application/json') { res.status(error.status).json({ error: error.message }); return; }
+      if (req.get('accept') === 'application/json') { res.status(error.status).json({ error: error.message, ...error.details }); return; }
       const doc = registry.document(uri(req));
-      res.status(error.status).send(editPage(registry, doc, { content: text(req.body.content), version: text(req.body.version), error: error.message }));
+      res.status(error.status).send(editPage(registry, doc, { content: text(req.body.content), version: text(req.body.version), error: error.message, returnTo, conflict: error.status === 409 }));
     }
   });
   app.post('/delete', (req, res) => {
@@ -187,13 +213,16 @@ export function createApp(config: Config) {
     const result = registry.deleteDirectory(uri(req), text(req.body.version));
     res.redirect(303, '/?' + new URLSearchParams({ vault: result.vaultId, directory: result.directory, deleted: '1' }));
   });
-  app.get('/search', (req, res) => res.send(searchPage(registry, text(req.query.vault, 'default'), text(req.query.q), integer(req.query.cursor))));
+  app.get('/search', (req, res) => res.send(searchPage(registry, text(req.query.vault).trim() || undefined, text(req.query.q), integer(req.query.cursor))));
   app.get('/lint', (req, res) => res.send(lintPage(registry, text(req.query.vault, 'default'))));
   app.post('/api/preview', (req, res) => {
     const vaultId = text(req.body.vault, 'default');
     const documents = registry.scan(vaultId).documents;
     const current = text(req.body.uri) ? registry.document(text(req.body.uri)) : undefined;
-    res.json({ html: renderMarkdown(parseMarkdown(text(req.body.markdown)).body, documents, current, editorStyleNonce) });
+    const raw = text(req.body.markdown);
+    const parsed = parseMarkdown(raw);
+    const metadata = hasFrontmatter(raw) ? parsed.metadata : current?.metadata;
+    res.json({ html: renderMarkdown(parsed.body, documents, current, editorStyleNonce, metadata) });
   });
   app.get('/api/vaults', (_req, res) => res.json(registry.listVaults()));
   app.get('/api/documents', (req, res) => res.json(registry.listDocuments(text(req.query.vault, 'default'), text(req.query.directory), integer(req.query.cursor), integer(req.query.limit, 50))));
@@ -229,7 +258,7 @@ export function createApp(config: Config) {
   const errorHandler: ErrorRequestHandler = (error, req, res, _next) => {
     const status = error instanceof AppError ? error.status : error instanceof multer.MulterError ? 413 : error instanceof z.ZodError || error.type === 'entity.parse.failed' ? 400 : error.type === 'entity.too.large' ? 413 : 500;
     const message = error instanceof AppError ? error.message : error instanceof multer.MulterError ? '上传文件过多或超过 16 MiB 限制' : status === 400 ? '请求参数无效' : status === 413 ? '请求内容超过大小限制' : '暂时无法完成操作';
-    if (req.path.startsWith('/api/') || req.path === '/download' || req.path === '/asset' || req.get('accept') === 'application/json') res.status(status).json({ error: message });
+    if (req.path.startsWith('/api/') || req.path === '/download' || req.path === '/asset' || req.get('accept') === 'application/json') res.status(status).json({ error: message, ...(error instanceof AppError ? error.details : {}) });
     else res.status(status).send(errorPage(registry, message));
   };
   app.use(errorHandler);

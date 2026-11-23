@@ -21,8 +21,9 @@ function render() {
 }
 
 window.addEventListener('message', event => {
-  if (event.source !== parent || event.data?.type !== 'coral-html-render' || typeof event.data.source !== 'string' || source !== undefined) return;
-  source = event.data.source;
+  if (event.source !== parent) return;
+  if (event.data?.type === 'coral-html-render' && typeof event.data.source === 'string' && source === undefined) source = event.data.source;
+  else if (event.data?.type !== 'coral-html-resize') return;
   render();
 });
 const resizeObserver = new ResizeObserver(render);

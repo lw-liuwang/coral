@@ -23,10 +23,21 @@ export function mountEditor() {
   const version = form.querySelector<HTMLInputElement>('[name="version"]');
   const vault = document.querySelector<HTMLInputElement>('#preview-vault')!.value;
   const uri = document.querySelector<HTMLInputElement>('#preview-uri')?.value;
-  const draftKey = `coral:draft:${uri ?? `new:${vault}`}`;
+  const draftUrl = new URL(location.href);
+  if (!uri && !/^[A-Za-z0-9_-]{8,100}$/.test(draftUrl.searchParams.get('draft') ?? '')) {
+    const draftId = typeof crypto.randomUUID === 'function' ? crypto.randomUUID()
+      : Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
+    draftUrl.searchParams.set('draft', draftId);
+    window.history.replaceState(window.history.state, '', draftUrl);
+  }
+  const draftKey = `coral:draft:${uri ?? `new:${vault}:${draftUrl.searchParams.get('draft')}`}`;
+  const legacyDraftKey = !uri ? `coral:draft:new:${vault}` : undefined;
   const status = document.querySelector<HTMLElement>('#save-status')!;
   const count = document.querySelector<HTMLElement>('#word-count')!;
   const errorBox = document.querySelector<HTMLElement>('#save-error')!;
+  const conflictActions = document.querySelector<HTMLElement>('#conflict-actions');
+  const downloadDraft = document.querySelector<HTMLButtonElement>('[data-download-draft]');
+  if (downloadDraft) downloadDraft.hidden = false;
   const notice = surface.querySelector<HTMLElement>('.draft-notice')!;
   const saveButton = document.querySelector<HTMLButtonElement>(`button[form="${form.id}"]`)!;
   let saving = false;
@@ -38,8 +49,14 @@ export function mountEditor() {
   let baseline = fingerprint(snapshot());
   const dirty = () => fingerprint(snapshot()) !== baseline;
   let pendingDraft: Draft | undefined;
+  let pendingDraftKey = draftKey;
   try {
-    const saved: unknown = JSON.parse(localStorage.getItem(draftKey) ?? 'null');
+    let raw = localStorage.getItem(draftKey);
+    if (!raw && legacyDraftKey) {
+      raw = localStorage.getItem(legacyDraftKey);
+      if (raw) pendingDraftKey = legacyDraftKey;
+    }
+    const saved: unknown = JSON.parse(raw ?? 'null');
     if (saved && typeof saved === 'object' && ['content', 'title', 'version'].every(key => typeof (saved as Record<string, unknown>)[key] === 'string')) {
       const draft = { ...saved, directory: typeof (saved as Draft).directory === 'string' ? (saved as Draft).directory : '' } as Draft;
       if (fingerprint(draft) !== baseline) { pendingDraft = draft; notice.hidden = false; }
@@ -82,7 +99,7 @@ export function mountEditor() {
     controller?.abort();
     previewTimer = setTimeout(() => void render(), 250);
     clearTimeout(draftTimer);
-    status.textContent = dirty() ? '未保存' : '未修改';
+    status.textContent = saving ? '正在保存…' : dirty() ? '未保存' : '未修改';
     if (dirty()) {
       pendingDraft = undefined;
       notice.hidden = true;
@@ -168,11 +185,28 @@ export function mountEditor() {
     view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: draft.content } });
     notice.hidden = true;
     pendingDraft = undefined;
-    changed(); persist(); view.focus();
+    changed(); persist();
+    if (pendingDraftKey !== draftKey) {
+      try {
+        if (localStorage.getItem(draftKey)) localStorage.removeItem(pendingDraftKey);
+      } catch { /* Keep the legacy draft if migration could not be saved. */ }
+      pendingDraftKey = draftKey;
+    }
+    view.focus();
   });
   surface.querySelector('[data-discard-draft]')!.addEventListener('click', () => {
-    try { localStorage.removeItem(draftKey); } catch { /* Optional storage. */ }
+    try { localStorage.removeItem(pendingDraftKey); } catch { /* Optional storage. */ }
     pendingDraft = undefined; notice.hidden = true;
+    pendingDraftKey = draftKey;
+  });
+  downloadDraft?.addEventListener('click', () => {
+    const blob = new Blob([textarea.value], { type: 'text/markdown;charset=utf-8' });
+    const downloadUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.download = (title?.value || 'coral-draft').replace(/[\\/:*?"<>|\x00-\x1f]/g, '-') + '.md';
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
   });
   window.addEventListener('beforeunload', event => {
     if (dirty()) { persist(); event.preventDefault(); event.returnValue = ''; }
@@ -184,7 +218,9 @@ export function mountEditor() {
     if (saving) return;
     saving = true; saveButton.disabled = true;
     if (!uri) form.inert = true;
-    errorBox.hidden = true; status.textContent = '正在保存…';
+    errorBox.hidden = true;
+    if (conflictActions) conflictActions.hidden = true;
+    status.textContent = '正在保存…';
     clearTimeout(draftTimer);
     const submitted = fingerprint(snapshot());
     try {
@@ -192,7 +228,9 @@ export function mountEditor() {
       new FormData(form).forEach((value, key) => { if (typeof value === 'string') payload.set(key, value); });
       const response = await fetch(form.action, { method: 'POST', headers: { Accept: 'application/json' }, body: payload });
       const data = await response.json();
+      if (response.status === 409 && conflictActions) conflictActions.hidden = false;
       if (!response.ok) throw new Error(data.error ?? '保存失败，请重试');
+      saving = false;
       baseline = submitted;
       if (version) version.value = data.version;
       if (dirty()) persist();

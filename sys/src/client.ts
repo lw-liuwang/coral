@@ -1,20 +1,31 @@
-import { createIcons, Library, Search, FilePlus, FolderPlus, Upload, Save, ArrowLeft, Pencil, Download, Trash2, Copy, Folder, FolderInput, FileText, CornerLeftUp, ChevronLeft, ChevronRight, Check, Undo2, Redo2, Heading2, Bold, Italic, Link, List, ListTodo, Quote, Code, Maximize2, Ellipsis, ScanSearch, RotateCcw, RefreshCw, TextCursorInput } from 'lucide';
+import { createIcons, Library, Search, FilePlus, FolderPlus, Upload, Save, ArrowLeft, Pencil, Download, Trash2, Copy, Folder, FolderOpen, FolderInput, FileText, CornerLeftUp, ChevronLeft, ChevronRight, Check, Undo2, Redo2, Heading2, Bold, Italic, Link, List, ListTodo, Quote, Code, Maximize2, Ellipsis, ScanSearch, RotateCcw, RefreshCw, TextCursorInput } from 'lucide';
 import { mountEditor } from './editor.js';
 import { renderDiagrams } from './diagrams.js';
 import { renderHtmlBlocks } from './html.js';
 import { mountReading } from './reading.js';
 
-const icons = { Library, Search, FilePlus, FolderPlus, Upload, Save, ArrowLeft, Pencil, Download, Trash2, Copy, Folder, FolderInput, FileText, CornerLeftUp, ChevronLeft, ChevronRight, Check, Undo2, Redo2, Heading2, Bold, Italic, Link, List, ListTodo, Quote, Code, Maximize2, Ellipsis, ScanSearch, RotateCcw, RefreshCw, TextCursorInput };
+const icons = { Library, Search, FilePlus, FolderPlus, Upload, Save, ArrowLeft, Pencil, Download, Trash2, Copy, Folder, FolderOpen, FolderInput, FileText, CornerLeftUp, ChevronLeft, ChevronRight, Check, Undo2, Redo2, Heading2, Bold, Italic, Link, List, ListTodo, Quote, Code, Maximize2, Ellipsis, ScanSearch, RotateCcw, RefreshCw, TextCursorInput };
 createIcons({ icons });
 
-document.querySelectorAll<HTMLDetailsElement>('.tools-menu').forEach(menu => {
-  document.addEventListener('click', event => { if (!menu.contains(event.target as Node)) menu.open = false; });
-  menu.addEventListener('keydown', event => {
-    if (event.key === 'Escape') { menu.open = false; menu.querySelector('summary')?.focus(); }
-  });
+const treeScroll = document.querySelector<HTMLElement>('.sidebar-scroll');
+const currentFolder = treeScroll?.querySelector<HTMLElement>('[aria-current="page"]');
+if (treeScroll && currentFolder) {
+  const viewport = treeScroll.getBoundingClientRect(), current = currentFolder.getBoundingClientRect();
+  if (current.top < viewport.top || current.bottom > viewport.bottom) {
+    treeScroll.scrollTop += current.top - viewport.top - (viewport.height - current.height) / 2;
+  }
+}
+
+const menus = document.querySelectorAll<HTMLDetailsElement>('.tools-menu');
+document.addEventListener('click', event => {
+  menus.forEach(menu => { if (!menu.contains(event.target as Node)) menu.open = false; });
+});
+document.addEventListener('keydown', event => {
+  if (event.key !== 'Escape') return;
+  const menu = (event.target as Element).closest<HTMLDetailsElement>('.tools-menu[open]');
+  if (menu) { menu.open = false; menu.querySelector('summary')?.focus(); }
 });
 
-document.querySelectorAll<HTMLSelectElement>('[data-vault-switch]').forEach(select => select.addEventListener('change', () => select.form?.requestSubmit()));
 document.querySelectorAll<HTMLFormElement>('form[data-confirm]').forEach(form => form.addEventListener('submit', event => {
   if (!window.confirm(form.dataset.confirm)) event.preventDefault();
 }));

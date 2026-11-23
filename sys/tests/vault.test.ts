@@ -1,4 +1,4 @@
-import { afterEach, test } from 'node:test';
+import { afterEach, test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, renameSync, symlinkSync, existsSync, lstatSync } from 'node:fs';
@@ -21,6 +21,20 @@ function fixture() {
   const registry = new VaultRegistry(config);
   cleanup.push(() => { registry.close(); rmSync(directory, { recursive: true, force: true }); });
   return { directory, registry, project, root: join(config.data_dir, 'obsdian', 'default') };
+}
+
+function createDirectoryLinkFixture(target: string, path: string) {
+  symlinkSync(target, path, process.platform === 'win32' ? 'junction' : 'dir');
+}
+
+function createFileSymlinkFixture(context: TestContext, target: string, path: string): boolean {
+  try { symlinkSync(target, path, 'file'); return true; }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'EPERM' && code !== 'ENOSYS') throw error;
+    context.skip(`File symbolic links are unavailable in this environment (${code})`);
+    return false;
+  }
 }
 
 test('math renders LaTeX delimiters and fences while preserving literal code and currency', () => {
@@ -71,7 +85,7 @@ test('moving notes preserves bytes, updates search and refuses unsafe destinatio
   assert.throws(() => registry.moveDocument(doc.uri, '归档/2026-11', doc.version), /同名/);
   assert.equal(readFileSync(join(project, '归档/2026-11/日报 #6%.md'), 'utf8'), 'existing content');
   rmSync(join(project, '归档/2026-11/日报 #6%.md'));
-  symlinkSync(join(project, '归档'), join(project, 'linked'), 'junction');
+  createDirectoryLinkFixture(join(project, '归档'), join(project, 'linked'));
   assert.throws(() => registry.moveDocument(doc.uri, 'linked', doc.version), /符号链接/);
   assert.ok(!registry.listDirectories('project').includes('linked'));
   const moved = registry.moveDocument(doc.uri, '归档/2026-11', doc.version);
@@ -319,7 +333,7 @@ test('empty folders support nested parents and reject collisions, traversal and 
   for (const name of ['', ' ', '.', '..', '.obsidian', '../outside', 'a/b', 'a\\b', 'bad\u0000', 'a'.repeat(256)]) {
     assert.throws(() => registry.createDirectory('project', 'docs', name), AppError);
   }
-  symlinkSync(directory, join(project, 'linked'));
+  createDirectoryLinkFixture(directory, join(project, 'linked'));
   assert.throws(() => registry.createDirectory('project', 'linked', 'outside'), AppError);
   assert.throws(() => registry.createDirectory('project', '../outside', 'child'), AppError);
   assert.throws(() => registry.createDirectory('project', 'missing', 'child'), AppError);
@@ -564,6 +578,26 @@ test('Chinese and English full-text search follows external additions, edits and
   assert.equal(registry.search('外部修改').total, 0);
 });
 
+test('search finds filenames and directory paths when titles differ and follows moves and removals', () => {
+  const { registry, project } = fixture();
+  mkdirSync(join(project, '课程资料/JAX transfer'), { recursive: true });
+  mkdirSync(join(project, '归档'), { recursive: true });
+  const path = '课程资料/JAX transfer/94-layernorm-rmsnorm.md';
+  writeFileSync(join(project, path), '---\ntitle: 归一化机制\n---\n# 归一化机制\n\n正文内容。');
+  const doc = registry.document(resourceUri('project', path));
+  for (const query of ['94-layernorm-rmsnorm.md', 'LAYERNORM', '课程资料', 'JAX transfer', '课程资料/JAX transfer']) {
+    assert.equal(registry.search(query, 'project').results[0]?.uri, doc.uri, query);
+  }
+  const moved = registry.moveDocument(doc.uri, '归档', doc.version);
+  assert.equal(registry.search('JAX transfer', 'project').total, 0);
+  assert.equal(registry.search('归档/94-layernorm-rmsnorm.md').results[0]?.uri, moved.uri);
+  const renamed = registry.rename(moved.uri, 'final-report.md', moved.version);
+  assert.equal(registry.search('94-layernorm-rmsnorm.md').total, 0);
+  assert.equal(registry.search('final-report.md').results[0]?.uri, renamed.uri);
+  rmSync(join(project, renamed.relative));
+  assert.equal(registry.search('final-report.md').total, 0);
+});
+
 test('search and reads support pagination, heading slices, and version consistency', () => {
   const { registry, project } = fixture();
   const raw = '# Intro\nHello\n## Details\n' + 'Long text 🪸 '.repeat(100) + '\n# End\nBye';
@@ -596,20 +630,30 @@ test('downloads preserve exact original bytes including BOM and CRLF', () => {
   assert.equal(registry.download('coral://vault/project/docs/design.md').metadata.size_bytes, bytes.length);
 });
 
-test('hidden files, symlinks, outside paths and oversized documents are rejected', () => {
-  const { registry, project, directory } = fixture();
-  mkdirSync(join(project, '.obsidian'));
-  writeFileSync(join(project, '.obsidian/secret.md'), 'Hidden');
-  writeFileSync(join(directory, 'outside.md'), 'Outside');
-  symlinkSync(join(directory, 'outside.md'), join(project, 'linked.md'));
-  symlinkSync(directory, join(project, 'linked-folder'));
-  for (const relative of ['linked.md', 'linked-folder/outside.md', '.obsidian/secret.md', '../outside.md']) {
-    assert.throws(() => registry.download('coral://vault/project/' + relative), AppError);
-  }
-  writeFileSync(join(project, 'large.md'), Buffer.alloc(MAX_FILE_BYTES + 1));
-  assert.throws(() => registry.download('coral://vault/project/large.md'), /16 MiB/);
-  assert.equal(registry.scan('project').documents.length, 0);
-  assert.equal(registry.scan('project').skipped, 1);
+test('hidden files, symlinks, outside paths and oversized documents are rejected', async context => {
+  await context.test('rejects hidden files, directory links, traversal and oversized documents', () => {
+    const { registry, project, directory } = fixture();
+    mkdirSync(join(project, '.obsidian'));
+    writeFileSync(join(project, '.obsidian/secret.md'), 'Hidden');
+    writeFileSync(join(directory, 'outside.md'), 'Outside');
+    createDirectoryLinkFixture(directory, join(project, 'linked-folder'));
+    for (const relative of ['linked-folder/outside.md', '.obsidian/secret.md', '../outside.md']) {
+      assert.throws(() => registry.download('coral://vault/project/' + relative), AppError);
+    }
+    writeFileSync(join(project, 'large.md'), Buffer.alloc(MAX_FILE_BYTES + 1));
+    assert.throws(() => registry.download('coral://vault/project/large.md'), /16 MiB/);
+    assert.equal(registry.scan('project').documents.length, 0);
+    assert.equal(registry.scan('project').skipped, 1);
+  });
+  await context.test('rejects file symbolic links and excludes them from scans', child => {
+    const { registry, project, directory } = fixture();
+    writeFileSync(join(directory, 'outside.md'), 'Outside');
+    if (!createFileSymlinkFixture(child, join(directory, 'outside.md'), join(project, 'linked.md'))) return;
+    assert.throws(() => registry.download('coral://vault/project/linked.md'), AppError);
+    assert.equal(registry.scan('project').documents.length, 0);
+    assert.equal(registry.scan('project').skipped, 0);
+    assert.equal(readFileSync(join(directory, 'outside.md'), 'utf8'), 'Outside');
+  });
 });
 
 test('unavailable Vaults are explicit and do not break searches across available Vaults', () => {
@@ -631,35 +675,46 @@ test('creation, deletion and Git history work on Markdown files', () => {
   assert.throws(() => registry.document(doc.uri), AppError);
 });
 
-test('deleting documents and folders moves exact bytes and attachments to a local trash', () => {
-  const { registry, root, directory } = fixture();
-  const standalone = registry.create('default', '单独文档', '保留字节');
-  registry.delete(standalone.uri, standalone.version);
-  const docBatch = readdirSync(join(root, '.trash'))[0];
-  assert.equal(readFileSync(join(root, '.trash', docBatch, standalone.relative), 'utf8'), standalone.raw);
-  const doc = registry.create('default', '设计', '内容', {}, undefined, '项目/nested');
-  writeFileSync(join(root, '项目/image.png'), Buffer.from([0, 1, 255]));
-  writeFileSync(join(root, '项目/.hidden'), 'hidden');
-  writeFileSync(join(directory, 'outside.md'), 'outside');
-  symlinkSync(join(directory, 'outside.md'), join(root, '项目/link.md'));
-  mkdirSync(join(root, '项目/empty'));
-  const snapshot = registry.browse('default').directories.find(folder => folder.name === '项目')!;
-  assert.equal(snapshot.file_count, 4);
-  registry.deleteDirectory(resourceUri('default', '项目'), snapshot.version!);
-  assert.ok(!existsSync(join(root, '项目')));
-  assert.equal(readFileSync(join(directory, 'outside.md'), 'utf8'), 'outside');
-  const batch = readdirSync(join(root, '.trash')).find(batch => existsSync(join(root, '.trash', batch, '项目')))!;
-  assert.equal(readFileSync(join(root, '.trash', batch, doc.relative), 'utf8'), doc.raw);
-  assert.deepEqual(readFileSync(join(root, '.trash', batch, '项目/image.png')), Buffer.from([0, 1, 255]));
-  assert.equal(readFileSync(join(root, '.trash', batch, '项目/.hidden'), 'utf8'), 'hidden');
-  assert.ok(lstatSync(join(root, '.trash', batch, '项目/link.md')).isSymbolicLink());
-  assert.ok(existsSync(join(root, '.trash', batch, '项目/empty')));
-  assert.equal(registry.search('内容').total, 0);
-  assert.ok(!registry.browse('default').directories.some(folder => folder.name === '.trash'));
-  mkdirSync(join(root, 'empty'));
-  const empty = registry.browse('default').directories[0];
-  registry.deleteDirectory(resourceUri('default', 'empty'), empty.version!);
-  assert.ok(!existsSync(join(root, 'empty')));
+test('deleting documents and folders moves exact bytes and attachments to a local trash', async context => {
+  await context.test('preserves Markdown bytes, attachments, hidden files and empty directories', () => {
+    const { registry, root } = fixture();
+    const standalone = registry.create('default', '单独文档', '保留字节');
+    registry.delete(standalone.uri, standalone.version);
+    const docBatch = readdirSync(join(root, '.trash'))[0];
+    assert.equal(readFileSync(join(root, '.trash', docBatch, standalone.relative), 'utf8'), standalone.raw);
+    const doc = registry.create('default', '设计', '内容', {}, undefined, '项目/nested');
+    writeFileSync(join(root, '项目/image.png'), Buffer.from([0, 1, 255]));
+    writeFileSync(join(root, '项目/.hidden'), 'hidden');
+    mkdirSync(join(root, '项目/empty'));
+    const snapshot = registry.browse('default').directories.find(folder => folder.name === '项目')!;
+    assert.equal(snapshot.file_count, 3);
+    registry.deleteDirectory(resourceUri('default', '项目'), snapshot.version!);
+    assert.ok(!existsSync(join(root, '项目')));
+    const batch = readdirSync(join(root, '.trash')).find(batch => existsSync(join(root, '.trash', batch, '项目')))!;
+    assert.equal(readFileSync(join(root, '.trash', batch, doc.relative), 'utf8'), doc.raw);
+    assert.deepEqual(readFileSync(join(root, '.trash', batch, '项目/image.png')), Buffer.from([0, 1, 255]));
+    assert.equal(readFileSync(join(root, '.trash', batch, '项目/.hidden'), 'utf8'), 'hidden');
+    assert.ok(existsSync(join(root, '.trash', batch, '项目/empty')));
+    assert.equal(registry.search('内容').total, 0);
+    assert.ok(!registry.browse('default').directories.some(folder => folder.name === '.trash'));
+    mkdirSync(join(root, 'empty'));
+    const empty = registry.browse('default').directories[0];
+    registry.deleteDirectory(resourceUri('default', 'empty'), empty.version!);
+    assert.ok(!existsSync(join(root, 'empty')));
+  });
+  await context.test('recycles file symbolic links without modifying their outside targets', child => {
+    const { registry, root, directory } = fixture();
+    mkdirSync(join(root, 'linked-files'));
+    writeFileSync(join(directory, 'outside.md'), 'outside');
+    if (!createFileSymlinkFixture(child, join(directory, 'outside.md'), join(root, 'linked-files/link.md'))) return;
+    const snapshot = registry.browse('default').directories.find(folder => folder.name === 'linked-files')!;
+    assert.equal(snapshot.file_count, 1);
+    registry.deleteDirectory(resourceUri('default', 'linked-files'), snapshot.version!);
+    assert.ok(!existsSync(join(root, 'linked-files')));
+    assert.equal(readFileSync(join(directory, 'outside.md'), 'utf8'), 'outside');
+    const batch = readdirSync(join(root, '.trash')).find(batch => existsSync(join(root, '.trash', batch, 'linked-files')))!;
+    assert.ok(lstatSync(join(root, '.trash', batch, 'linked-files/link.md')).isSymbolicLink());
+  });
 });
 
 test('folder deletion detects external changes and refuses roots, traversal and symlinks', () => {
@@ -672,14 +727,14 @@ test('folder deletion detects external changes and refuses roots, traversal and 
   for (const path of ['', '../escape', '.obsidian', '.trash', 'folder/..']) {
     assert.throws(() => registry.deleteDirectory(resourceUri('default', path), 'version'), AppError);
   }
-  symlinkSync(project, join(root, 'linked'));
+  createDirectoryLinkFixture(project, join(root, 'linked'));
   assert.throws(() => registry.deleteDirectory(resourceUri('default', 'linked'), 'version'), AppError);
   const alias = new VaultRegistry(createConfig({ data_dir: registry.config.data_dir, vaults: { nested: { path: join(root, 'folder') } } }));
   try {
     const folder = alias.browse('default').directories.find(folder => folder.name === 'folder')!;
     assert.throws(() => alias.deleteDirectory(resourceUri('default', 'folder'), folder.version!), /知识库/);
   } finally { alias.close(); }
-  symlinkSync(directory, join(root, '.trash'));
+  createDirectoryLinkFixture(directory, join(root, '.trash'));
   const current = registry.document(doc.uri);
   assert.throws(() => registry.delete(doc.uri, current.version), /回收站/);
   assert.ok(existsSync(join(root, doc.relative)));
@@ -840,11 +895,11 @@ test('folders replace fixed classifications without moving legacy documents or c
     assert.throws(() => registry.browse('default', folder), AppError);
     assert.throws(() => registry.create('default', 'Blocked', '', {}, undefined, folder), AppError);
   }
-  symlinkSync(directory, join(root, 'linked'));
+  createDirectoryLinkFixture(directory, join(root, 'linked'));
   assert.ok(!registry.browse('default').directories.some(folder => folder.name === 'linked'));
   assert.throws(() => registry.browse('default', 'linked'), AppError);
   assert.throws(() => registry.create('default', 'Blocked', '', {}, undefined, 'linked'), AppError);
-  symlinkSync(project, join(directory, 'project-link'));
+  createDirectoryLinkFixture(project, join(directory, 'project-link'));
   const alias = new VaultRegistry(createConfig({ data_dir: registry.config.data_dir, vaults: { alias: { path: join(directory, 'project-link') } } }));
   try { assert.equal(alias.browse('alias').directories[0].name, 'docs'); }
   finally { alias.close(); }

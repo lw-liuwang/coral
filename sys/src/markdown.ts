@@ -1,7 +1,7 @@
 import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
 import { posix, extname } from 'node:path';
-import { resourceUri, safeParts } from './content.js';
+import { decodedPathCandidates, resourceUri, safeParts } from './content.js';
 import type { Document } from './vault.js';
 import { configureMath } from './math.js';
 
@@ -31,24 +31,30 @@ function linkIndex(documents: Document[]) {
 }
 
 export function resolveRelativeLink(target: string, documents: Document[], current: Document) {
-  const path = posix.normalize(posix.join(posix.dirname(current.relative), target.split('#')[0])).replace(/\.(md|markdown)$/i, '');
-  return linkIndex(documents).paths.get(path);
+  for (const candidate of decodedPathCandidates(target.split('#')[0]).reverse()) {
+    const path = posix.normalize(posix.join(posix.dirname(current.relative), candidate)).replace(/\.(md|markdown)$/i, '');
+    const document = linkIndex(documents).paths.get(path);
+    if (document) return document;
+  }
+  return undefined;
 }
 
 export function resolveLink(target: string, documents: Document[], current?: Document): Document | undefined {
-  let base = target.split('#')[0].replace(/\.(md|markdown)$/i, '');
-  if (!base && current) return current;
   const index = linkIndex(documents);
-  const exact = index.paths.get(base);
-  if (exact) return exact;
-  if (current) {
-    base = posix.normalize(posix.join(posix.dirname(current.relative), base));
-    const local = index.paths.get(base);
-    if (local) return local;
+  for (const path of decodedPathCandidates(target.split('#')[0])) {
+    const base = path.replace(/\.(md|markdown)$/i, '');
+    if (!base && current) return current;
+    const exact = index.paths.get(base);
+    if (exact) return exact;
+    if (current) {
+      const local = index.paths.get(posix.normalize(posix.join(posix.dirname(current.relative), base)));
+      if (local) return local;
+    }
+    const candidates = index.names.get(base);
+    // An existing literal percent-containing name or alias takes priority, even if ambiguous.
+    if (candidates?.size) return candidates.size === 1 ? candidates.values().next().value : undefined;
   }
-  const short = target.split('#')[0].replace(/\.(md|markdown)$/i, '');
-  const candidates = index.names.get(short);
-  return candidates?.size === 1 ? candidates.values().next().value : undefined;
+  return undefined;
 }
 
 const backlinkIndexes = new WeakMap<Document[], Map<string, Document[]>>();
@@ -85,7 +91,7 @@ export function wikiTargets(body: string): string[] {
   return result;
 }
 
-export function renderMarkdown(body: string, documents: Document[], current?: Document, styleNonce?: string): string {
+export function renderMarkdown(body: string, documents: Document[], current?: Document, styleNonce?: string, metadata: Record<string, unknown> | undefined = current?.metadata): string {
   const md = new MarkdownIt({ html: false, linkify: true, typographer: false,
     highlight(code, language) {
       if (language && hljs.getLanguage(language)) return hljs.highlight(code, { language }).value;
@@ -93,6 +99,20 @@ export function renderMarkdown(body: string, documents: Document[], current?: Do
     },
   });
   const mathStyles = configureMath(md, styleNonce);
+  if (metadata?.paragraph_indent === '2em') {
+    md.renderer.rules.paragraph_open = (tokens, index, options, _env, renderer) => {
+      const children = tokens[index + 1]?.children ?? [];
+      const previous = tokens[index - 1];
+      const imageParagraph = previous?.type === 'paragraph_close' && tokens[index - 2]?.children?.some(token => token.type === 'image');
+      const diagram = previous?.type === 'fence' && /^(?:html|mermaid)(?:\s|$)/i.test(previous.info.trim()) && !/^html\s+source(?:\s|$)/i.test(previous.info.trim());
+      const afterVisual = imageParagraph || diagram || previous?.type === 'table_close';
+      // Markdown has no caption node. Recognize a numbered caption only beside its visual.
+      const caption = afterVisual && /^(?:图|表|Figure|Fig\.?|Table)\s*(?:\d+(?:[.\-–]\d+)*|[一二三四五六七八九十百]+)\s*(?:[:：．、]|\.(?!\d))/i.test(children.filter(token => token.type === 'text' || token.type === 'code_inline').map(token => token.content).join('').trim());
+      if (tokens[index].level === 0 && !tokens[index].hidden && children.some(token => token.type === 'text' && token.content.trim())
+        && !children.some(token => token.type === 'image') && !caption) tokens[index].attrJoin('class', 'paragraph-indent');
+      return renderer.renderToken(tokens, index, options);
+    };
+  }
   // CommonMark treats punctuation next to emphasis as a word boundary. CJK
   // prose has no spaces between words, so allow punctuation-bearing labels
   // beside CJK characters, while keeping normal delimiter pairing/escaping.
@@ -170,10 +190,10 @@ export function renderMarkdown(body: string, documents: Document[], current?: Do
     const href = tokens[idx].attrGet('href') ?? '';
     if (current && !/^(?:[a-z][a-z\d+.-]*:|\/|#)/i.test(href)) {
       try {
-        const target = decodeURIComponent(href);
+        const target = href;
         if (/\.(md|markdown)(?:#.*)?$/i.test(target)) {
           const doc = resolveRelativeLink(target, documents, current);
-          if (doc) tokens[idx].attrSet('href', viewUrl(doc.uri) + (target.includes('#') ? '#' + encodeURIComponent(headingId(target.split('#')[1])) : ''));
+          if (doc) tokens[idx].attrSet('href', viewUrl(doc.uri) + (target.includes('#') ? '#' + encodeURIComponent(headingId(decodeURIComponent(target.split('#')[1]))) : ''));
           else tokens[idx].attrSet('class', 'broken');
         }
       } catch { /* Preserve malformed URLs as inert Markdown output. */ }

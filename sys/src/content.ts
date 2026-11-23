@@ -1,12 +1,16 @@
 import { parse, stringify } from 'yaml';
 
 export class AppError extends Error {
-  constructor(message: string, public status = 400) { super(message); }
+  constructor(message: string, public status = 400, public details?: {
+    recovery?: { operation_id: string; partial: boolean; conflicts: { uri: string; reason: string }[]; affected_uris: string[] };
+  }) { super(message); }
 }
+
+export const hasFrontmatter = (raw: string) => /^(?:\uFEFF)?---[ \t]*\r?\n/.test(raw);
 
 export function parseMarkdown(raw: string): { metadata: Record<string, unknown>; body: string } {
   raw = raw.replace(/^\uFEFF/, '');
-  if (!/^---[ \t]*\r?\n/.test(raw)) return { metadata: {}, body: raw };
+  if (!hasFrontmatter(raw)) return { metadata: {}, body: raw };
   try {
     const match = /^---[ \t]*\r?\n([\s\S]*?)^---[ \t]*(?:\r?\n|$)/m.exec(raw);
     if (!match || match.index !== 0) throw new Error('unclosed frontmatter');
@@ -35,6 +39,13 @@ export function safeParts(relative: string, empty = false): string[] {
 
 export function resourceUri(vaultId: string, relative = ''): string {
   return `coral://vault/${vaultId}/${relative.split('/').map(encodeURIComponent).join('/')}`;
+}
+
+export function decodedPathCandidates(path: string): string[] {
+  try {
+    const decoded = decodeURIComponent(path);
+    return decoded === path ? [path] : [path, decoded];
+  } catch { return [path]; }
 }
 
 export function parseUri(uri: string): { vaultId: string; relative: string } {

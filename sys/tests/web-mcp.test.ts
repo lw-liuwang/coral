@@ -9,16 +9,17 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { createConfig } from '../src/config.js';
 import { createApp } from '../src/web.js';
+import { AppError } from '../src/content.js';
 
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => { while (cleanup.length) await cleanup.pop()!(); });
-async function fixture() {
+async function fixture(resultsPerPage = 20) {
   const root = mkdtempSync(join(tmpdir(), 'coral-http-'));
   const project = join(root, 'project');
   mkdirSync(join(project, 'docs'), { recursive: true });
   const raw = '\uFEFF---\r\ntitle: Design\r\n---\r\n# Overview\r\n数据库索引设计\r\n';
   writeFileSync(join(project, 'docs/design.md'), raw);
-  const config = createConfig({ data_dir: join(root, 'data'), vaults: { project: { path: project } } });
+  const config = createConfig({ data_dir: join(root, 'data'), vaults: { project: { path: project } }, search: { results_per_page: resultsPerPage } });
   const application = createApp(config);
   const server = application.app.listen(0, '127.0.0.1');
   await new Promise<void>(resolve => server.once('listening', resolve));
@@ -29,12 +30,117 @@ async function fixture() {
   return { ...application, base, root, project, raw };
 }
 const params = (data: Record<string, string>) => ({ method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(data), redirect: 'manual' as const });
+const searchResultUris = (html: string) => [...html.matchAll(/<[^>]*\bclass="[^"]*\bresult-item\b[^"]*"[^>]*>/g)].map(match => {
+  const uri = match[0].match(/\bdata-document-uri="([^"]+)"/)?.[1];
+  assert.ok(uri, 'Each search result identifies its document');
+  return uri;
+});
+function searchPageLink(html: string, label: string, base: string) {
+  const link = [...html.matchAll(/<a\b[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g)]
+    .find(match => match[2].replace(/<[^>]*>/g, '').trim() === label);
+  return link ? new URL(link[1].replaceAll('&amp;', '&'), base) : undefined;
+}
 async function callMcp(client: Client, name: string, args: Record<string, unknown> = {}) {
   const response = await client.callTool({ name, arguments: args });
   assert.ok(!response.isError, JSON.stringify(response));
   assert.ok(response.structuredContent);
   return response.structuredContent;
 }
+
+test('Web maintains references and reports changed notes while MCP keeps an opt-in byte-preserving contract', async () => {
+  const { base, project, registry } = await fixture();
+  mkdirSync(join(project, 'archive'));
+  writeFileSync(join(project, 'source.md'), '[read](docs/design.md)\n[[docs/design|Design]]');
+  const client = new Client({ name: 'organizing-agent', version: '1' });
+  await client.connect(new StreamableHTTPClientTransport(new URL(base + '/mcp')));
+  cleanup.push(() => client.close());
+  const tools = await client.listTools();
+  for (const name of ['move_document', 'rename_document', 'rename_directory']) {
+    const schema = tools.tools.find(tool => tool.name === name)!.inputSchema;
+    assert.equal((schema.properties!.update_links as { default: boolean }).default, false);
+    assert.ok(!schema.required?.includes('update_links'));
+  }
+  const doc = registry.document('coral://vault/project/docs/design.md');
+  const moved = await callMcp(client, 'move_document', { uri: doc.uri, directory: 'archive', version: doc.version });
+  assert.equal(moved.updated_documents, undefined);
+  assert.equal(readFileSync(join(project, 'source.md'), 'utf8'), '[read](docs/design.md)\n[[docs/design|Design]]');
+  await callMcp(client, 'move_document', { uri: moved.uri, directory: 'docs', version: moved.version });
+  const response = await fetch(base + '/move', params({ uri: doc.uri, version: doc.version, directory: 'archive', from: 'document' }));
+  assert.equal(response.status, 303);
+  const destination = new URL(response.headers.get('location')!, base);
+  assert.ok(destination.searchParams.get('operation'));
+  const html = await (await fetch(destination)).text();
+  assert.match(html, /aria-label="整理结果"/);
+  assert.match(html, /已更新 1 篇笔记的链接/);
+  assert.match(html, /project\/source\.md/);
+  assert.equal(readFileSync(join(project, 'source.md'), 'utf8'), '[read](archive/design.md)\n[[archive/design|Design]]');
+  const renamed = await callMcp(client, 'rename_document', { uri: moved.uri, name: 'renamed.md', version: moved.version, update_links: true });
+  assert.equal((renamed.updated_documents as { uri: string }[])[0].uri, 'coral://vault/project/source.md');
+  assert.ok(renamed.operation_id);
+  assert.deepEqual(renamed.unresolved_links, []);
+  assert.ok(readFileSync(join(project, 'source.md'), 'utf8').includes('archive/renamed.md'));
+  assert.equal(registry.document(String(renamed.uri)).version, renamed.version);
+});
+
+test('partial relocation recovery reaches both Web and MCP callers without server paths', async () => {
+  const { base, registry, root } = await fixture();
+  const doc = registry.document('coral://vault/project/docs/design.md');
+  const recovery = { operation_id: '016c96ab-7484-4129-b4f4-f88879adba97', partial: true,
+    conflicts: [{ uri: doc.uri, reason: '内容已被外部修改' }], affected_uris: [doc.uri] };
+  registry.moveDocument = () => { throw new AppError('部分更改未撤回，原文件备份已保留', 409, { recovery }); };
+  const web = await fetch(base + '/move', { ...params({ uri: doc.uri, version: doc.version, directory: '', from: 'document' }), headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' } });
+  assert.equal(web.status, 409);
+  assert.deepEqual((await web.json()).recovery, recovery);
+  const client = new Client({ name: 'recovery-agent', version: '1' });
+  await client.connect(new StreamableHTTPClientTransport(new URL(base + '/mcp')));
+  cleanup.push(() => client.close());
+  const response = await client.callTool({ name: 'move_document', arguments: { uri: doc.uri, version: doc.version, directory: '', update_links: true } });
+  assert.equal(response.isError, true);
+  assert.deepEqual(response.structuredContent?.recovery, recovery);
+  assert.ok(!JSON.stringify(response).includes(root));
+  const html = await (await fetch(base + '/move', params({ uri: doc.uri, version: doc.version, directory: '', from: 'document' }))).text();
+  assert.match(html, /恢复编号/);
+  assert.ok(html.includes(recovery.operation_id));
+  assert.doesNotMatch(html, /action="\/move"/);
+  assert.ok(searchPageLink(html, '返回知识库', base));
+});
+
+test('renaming and moving remap the search result anchor to the new document URI', async () => {
+  const { base, project, registry } = await fixture();
+  mkdirSync(join(project, 'archive'));
+  const search = await (await fetch(base + '/search?q=Design&vault=project&cursor=0')).text();
+  const readUrl = searchPageLink(search, 'Design', base)!;
+  let returnTo = readUrl.searchParams.get('return_to')!;
+  const before = new URL(returnTo, base).hash;
+  const doc = registry.document('coral://vault/project/docs/design.md');
+  const renamed = await fetch(base + '/rename', params({ uri: doc.uri, version: doc.version, name: 'final.md', from: 'document', return_to: returnTo }));
+  const nextUrl = new URL(renamed.headers.get('location')!, base);
+  returnTo = nextUrl.searchParams.get('return_to')!;
+  const afterRename = new URL(returnTo, base);
+  assert.notEqual(afterRename.hash, before);
+  assert.ok((await (await fetch(afterRename)).text()).includes('id="' + afterRename.hash.slice(1) + '"'));
+  const current = registry.document(nextUrl.searchParams.get('uri')!);
+  const moved = await fetch(base + '/move', params({ uri: current.uri, version: current.version, directory: 'archive', from: 'document', return_to: returnTo }));
+  const afterMove = new URL(new URL(moved.headers.get('location')!, base).searchParams.get('return_to')!, base);
+  assert.notEqual(afterMove.hash, afterRename.hash);
+  assert.equal(afterMove.searchParams.get('q'), 'Design');
+  assert.equal(afterMove.searchParams.get('vault'), 'project');
+  assert.ok((await (await fetch(afterMove)).text()).includes('id="' + afterMove.hash.slice(1) + '"'));
+});
+
+test('native conflict responses keep the draft and expose the current document without relaxing its version', async () => {
+  const { base, registry } = await fixture();
+  const doc = registry.document('coral://vault/project/docs/design.md');
+  registry.update(doc.uri, '外部写入的新版本', doc.version);
+  const response = await fetch(base + '/edit', params({ uri: doc.uri, version: doc.version, content: '浏览器中尚未合并的草稿' }));
+  assert.equal(response.status, 409);
+  const html = await response.text();
+  assert.match(html, /id="conflict-actions" class="btns">/);
+  assert.ok(searchPageLink(html, '查看最新版本', base));
+  assert.ok(html.includes('浏览器中尚未合并的草稿'));
+  assert.ok(html.includes('name="version" value="' + doc.version + '"'));
+  assert.ok(registry.document(doc.uri).raw.includes('外部写入的新版本'));
+});
 
 test('reading navigation follows natural sibling order and stays within the current directory', async () => {
   const { base, project, registry } = await fixture();
@@ -44,8 +150,8 @@ test('reading navigation follows natural sibling order and stays within the curr
   const uri = (number: number) => 'coral://vault/project/lessons/' + number + '.md';
   const html = await (await fetch(base + '/document?' + new URLSearchParams({ uri: uri(10) }))).text();
   assert.match(html, /第 2 \/ 4 篇/);
-  assert.match(html, /rel="prev" href="[^"]*9\.md"/);
-  assert.match(html, /rel="next" href="[^"]*11\.md"/);
+  assert.match(html, /rel="prev" href="[^"]*9\.md&amp;reading=start"/);
+  assert.match(html, /rel="next" href="[^"]*11\.md&amp;reading=start"/);
   assert.match(html, /aria-label="文末阅读导航"/);
   assert.equal([...html.matchAll(/<nav class="reading-nav/g)].length, 1);
   assert.match(html, /<\/article><nav class="reading-nav/);
@@ -63,7 +169,7 @@ test('reading navigation follows natural sibling order and stays within the curr
   registry.delete(removed.uri, removed.version);
   const refreshed = await (await fetch(base + '/document?' + new URLSearchParams({ uri: uri(10) }))).text();
   assert.match(refreshed, /第 2 \/ 3 篇/);
-  assert.match(refreshed, /rel="next" href="[^"]*100\.md"/);
+  assert.match(refreshed, /rel="next" href="[^"]*100\.md&amp;reading=start"/);
 });
 
 test('cyclic YAML properties render safely and corrupt Vault trash states do not break other pages', async () => {
@@ -200,6 +306,137 @@ test('manual create, edit, conflict, search and delete over HTTP', async () => {
   const deleted = await fetch(base + '/delete', params({ uri: doc.uri, version: registry.document(doc.uri).version }));
   assert.equal(deleted.status, 303);
   assert.equal((await fetch(base + location)).status, 404);
+});
+
+test('Web creation parses frontmatter like preview and MCP and preserves invalid input', async () => {
+  const { base, registry } = await fixture();
+  const content = '---\ntitle: Markdown title\ntags: [audit, reading]\nowner: testing\n---\n# Body heading\n\nBody text';
+  const response = await fetch(base + '/new', params({ vault: 'default', title: 'Form title', content }));
+  assert.equal(response.status, 303);
+  const doc = registry.scan('default').documents[0];
+  assert.equal(doc.title, 'Form title');
+  assert.deepEqual(doc.metadata.tags, ['audit', 'reading']);
+  assert.equal(doc.metadata.owner, 'testing');
+  assert.equal(doc.body, '# Body heading\n\nBody text');
+  assert.equal([...doc.raw.matchAll(/^---$/gm)].length, 2);
+  const invalid = '---\ntags: [unclosed\n---\nKeep my draft';
+  const failed = await fetch(base + '/new', params({ vault: 'default', title: 'Invalid draft', directory: 'drafts', content: invalid }));
+  assert.equal(failed.status, 400);
+  const html = await failed.text();
+  assert.match(html, /YAML 属性格式无效/);
+  assert.ok(html.includes(invalid));
+  assert.match(html, /name="title"[^>]*value="Invalid draft"/);
+  assert.match(html, /name="directory"[^>]*value="drafts"/);
+  assert.equal(registry.scan('default').documents.length, 1);
+});
+
+test('Web pages share one sidebar search form and expose its scope only on search results', async () => {
+  const { base } = await fixture();
+  const uri = 'coral://vault/project/docs/design.md';
+  for (const path of ['/', '/?vault=project', '/document?' + new URLSearchParams({ uri }), '/edit?' + new URLSearchParams({ uri }), '/search', '/search?q=索引&vault=project']) {
+    const response = await fetch(base + path);
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    const sidebars = [...html.matchAll(/<aside\b[^>]*>[\s\S]*?<\/aside>/g)];
+    assert.equal(sidebars.length, 1, path);
+    const forms = [...html.matchAll(/<form\b[^>]*>[\s\S]*?<\/form>/g)].filter(match => /\brole="search"/.test(match[0]));
+    assert.equal(forms.length, 1, path);
+    const form = forms[0][0];
+    assert.ok(sidebars[0][0].includes(form), 'Keep the search form in the sidebar');
+    assert.match(form, /action="\/search"/);
+    assert.match(form, /<input[^>]*type="search"[^>]*aria-label="搜索知识库"/);
+    assert.match(form, /<button[^>]*aria-label="搜索"/);
+    assert.doesNotMatch(form, /<input[^>]*name="vault"/);
+    assert.doesNotMatch(html, /<dialog\b/);
+    if (path.startsWith('/search')) {
+      assert.match(form, /<select[^>]*name="vault"[^>]*aria-label="搜索范围"/);
+      assert.match(form, /<option value="">全部知识库<\/option>/);
+      if (path.includes('vault=project')) assert.match(form, /<option value="project" selected>/);
+    } else assert.doesNotMatch(form, /<select\b/);
+  }
+});
+
+test('Web search finds all knowledge bases and distinguishes identical titles by source path', async () => {
+  const { base, registry } = await fixture();
+  const documents = [
+    registry.create('default', 'Shared title', 'searchneedle', {}, 'first', 'notes'),
+    registry.create('project', 'Shared title', 'searchneedle', {}, 'second', 'docs'),
+    registry.create('project', 'Shared title', 'searchneedle', {}, 'third', 'archive'),
+  ];
+  const expected = documents.map(doc => doc.uri).sort();
+  for (const scope of [undefined, '', '   ']) {
+    const query = new URLSearchParams({ q: 'searchneedle' });
+    if (scope !== undefined) query.set('vault', scope);
+    const response = await fetch(base + '/search?' + query);
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.deepEqual(searchResultUris(html).sort(), expected);
+    const visible = html.replace(/<[^>]*>/g, ' ');
+    for (const doc of documents) assert.ok(visible.includes(doc.relative), `Show the source path ${doc.relative}`);
+    for (const id of ['default', 'project']) assert.ok(visible.includes(registry.vault(id).name));
+  }
+  for (const scope of ['default', 'project']) {
+    const response = await fetch(base + '/search?' + new URLSearchParams({ q: 'searchneedle', vault: scope }));
+    assert.equal(response.status, 200);
+    assert.deepEqual(searchResultUris(await response.text()).sort(), documents.filter(doc => doc.vaultId === scope).map(doc => doc.uri).sort());
+  }
+  const filenameSearch = await fetch(base + '/search?' + new URLSearchParams({ q: 'archive/third.md' }));
+  assert.equal(filenameSearch.status, 200);
+  assert.deepEqual(searchResultUris(await filenameSearch.text()), [documents[2].uri]);
+});
+
+test('Web search pagination preserves the query and selected knowledge-base scope', async () => {
+  const { base, registry } = await fixture(2);
+  const documents = Array.from({ length: 5 }, (_, index) => registry.create(index < 2 ? 'default' : 'project', `Result ${index}`, 'pagingneedle'));
+  for (const scope of ['', 'project']) {
+    const query = new URLSearchParams({ q: 'pagingneedle', ...(scope ? { vault: scope } : {}) });
+    let page = await (await fetch(base + '/search?' + query)).text();
+    const first = searchResultUris(page);
+    assert.equal(first.length, 2);
+    assert.equal(searchPageLink(page, '上一页', base), undefined);
+    const seen = [...first];
+    let pageNumber = 1;
+    while (searchPageLink(page, '下一页', base)) {
+      const next = searchPageLink(page, '下一页', base)!;
+      assert.equal(next.pathname, '/search');
+      assert.equal(next.searchParams.get('q'), 'pagingneedle');
+      assert.equal(next.searchParams.get('vault') || '', scope);
+      assert.equal(next.searchParams.get('cursor'), String(pageNumber * 2));
+      assert.ok(pageNumber < 3, 'Pagination must terminate');
+      const response = await fetch(next);
+      assert.equal(response.status, 200);
+      page = await response.text();
+      seen.push(...searchResultUris(page));
+      if (pageNumber === 1) {
+        const previous = searchPageLink(page, '上一页', base)!;
+        assert.ok(previous);
+        assert.equal(previous.searchParams.get('q'), 'pagingneedle');
+        assert.equal(previous.searchParams.get('vault') || '', scope);
+        assert.equal(previous.searchParams.get('cursor'), '0');
+        assert.deepEqual(searchResultUris(await (await fetch(previous)).text()), first);
+      }
+      pageNumber++;
+    }
+    const expected = documents.filter(doc => !scope || doc.vaultId === scope).map(doc => doc.uri).sort();
+    assert.deepEqual(seen.sort(), expected);
+  }
+});
+
+test('Web global search reports unavailable knowledge bases and keeps available results', async () => {
+  const { base, registry, project } = await fixture();
+  const available = registry.create('default', 'Available result', 'partialneedle');
+  registry.create('project', 'Unavailable result', 'partialneedle');
+  rmSync(project, { recursive: true });
+  const response = await fetch(base + '/search?q=partialneedle');
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.deepEqual(searchResultUris(html), [available.uri]);
+  const feedback = [...html.matchAll(/<[^>]*role="(?:alert|status)"[^>]*>([\s\S]*?)<\/div>/g)].map(match => match[1].replace(/<[^>]*>/g, ' ')).join(' ');
+  assert.ok(feedback.includes('project'), 'Name the library omitted from search');
+  assert.match(feedback, /暂不可用|未搜索|无法读取|搜索不完整/);
+  const scoped = await fetch(base + '/search?q=partialneedle&vault=project');
+  assert.equal(scoped.status, 404);
+  assert.match(await scoped.text(), /知识库暂不可用/);
 });
 
 test('create empty folders through Web with conflict errors preserving the parent and name', async () => {
@@ -439,7 +676,7 @@ test('MCP Streamable HTTP handshake, tools, resources, search, read and download
   assert.deepEqual(listed.tools.map(tool => tool.name).sort(), [...readTools, ...writeTools].sort());
   for (const tool of listed.tools) {
     assert.equal(tool.annotations?.readOnlyHint, readTools.includes(tool.name));
-    assert.equal(tool.annotations?.destructiveHint, tool.name.startsWith('delete_') || tool.name === 'update_document');
+    assert.equal(tool.annotations?.destructiveHint, tool.name.startsWith('delete_') || ['update_document', 'move_document', 'rename_document', 'rename_directory'].includes(tool.name));
     assert.equal(tool.annotations?.openWorldHint, false);
     if (writeTools.includes(tool.name)) assert.equal(tool.annotations?.idempotentHint, false);
   }
@@ -453,6 +690,10 @@ test('MCP Streamable HTTP handshake, tools, resources, search, read and download
   assert.ok(JSON.stringify(docs).includes('coral://vault/project/docs/design.md'));
   const searched = await client.callTool({ name: 'search_documents', arguments: { query: '索引' } });
   assert.ok(JSON.stringify(searched).includes('coral://vault/project/docs/design.md'));
+  const byPath = await callMcp(client, 'search_documents', { query: 'docs/design.md' });
+  assert.equal(byPath.total, 1);
+  assert.equal((byPath.results as { uri: string; path: string }[])[0].uri, 'coral://vault/project/docs/design.md');
+  assert.equal((byPath.results as { path: string }[])[0].path, 'docs/design.md');
   const read = await client.callTool({ name: 'read_document', arguments: { uri: 'coral://vault/project/docs/design.md', max_chars: 10 } });
   assert.equal(read.structuredContent?.truncated, true);
   const downloaded = await client.callTool({ name: 'download_document', arguments: { uri: 'coral://vault/project/docs/design.md' } });
@@ -551,9 +792,9 @@ test('Web and MCP list numbered files and folders in natural order across pages'
   const indexPage = await (await fetch(base + '/document?' + new URLSearchParams({ uri: 'coral://vault/project/cs336/index.md' }))).text();
   assert.match(indexPage, /第 1 \/ 7 篇/);
   assert.doesNotMatch(indexPage, /rel="prev"/);
-  assert.match(indexPage, /rel="next" href="[^"]*2-note\.md"/);
+  assert.match(indexPage, /rel="next" href="[^"]*2-note\.md&amp;reading=start"/);
   const firstPage = await (await fetch(base + '/document?' + new URLSearchParams({ uri: 'coral://vault/project/cs336/2-note.md' }))).text();
-  assert.match(firstPage, /rel="prev" href="[^"]*index\.md"/);
+  assert.match(firstPage, /rel="prev" href="[^"]*index\.md&amp;reading=start"/);
   const client = new Client({ name: 'natural-order-agent', version: '1' });
   await client.connect(new StreamableHTTPClientTransport(new URL(base + '/mcp')));
   cleanup.push(() => client.close());

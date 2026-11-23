@@ -54,19 +54,43 @@ bash sys/run.sh
 
 文末提供「上一篇 / 下一篇」，显示相邻文档的标题和当前篇目位置，按同一目录中的顺序切换。点击顶部的「所在目录」会定位到当前文档。目录页会标出上次打开的文档，并提供「继续阅读」和「下一篇」。
 
-阅读位置按目录保存在当前浏览器中，刷新或重新打开后仍可继续。这里记录的是上次打开的位置，不代表已经读完，也不会跨浏览器同步。
+左栏用于切换知识库和文件夹，右侧显示目录、笔记或编辑器。当前文件夹自动展开并高亮。
 
-搜索支持中文全文检索。文档也支持反向链接和结构检查，方便查找引用关系与链接问题。文档没有固定分类；`index.md` 只是排序靠前，仍可像其他文档一样编辑、搜索和删除。
+当前浏览器会记住每个目录上次打开的笔记，以及每篇笔记读到的章节和滚动位置。刷新或重新打开时恢复位置，显式标题链接优先；点击「上一篇 / 下一篇」则从相邻笔记开头阅读。回到阅读页或重新激活窗口时，页面会检查磁盘版本，有更新就重新加载并恢复位置；编辑页保留当前草稿。阅读记录不代表已经读完，也不会跨浏览器同步。
+
+在侧栏输入关键词并回车即可搜索全部知识库；结果页可进一步选择单个知识库。空白分隔的关键词需要同时命中，例如 `KV 带宽` 可以找到「KV Cache 的容量与带宽」。精确标题或文件名优先，其次是标题、路径命中，再按正文相关度排序。结果显示所属知识库和相对路径，点击路径可打开所在目录并定位到文件。从结果打开笔记后，可以「返回搜索」回到原关键词、范围和页码；编辑、重命名和移动会保留这个返回入口。搜索支持分页和无 JavaScript 的表单提交，使用本地关键词索引，不运行模型。
+
+新建页各自保存独立的本地草稿，刷新后仍可恢复；升级前的旧草稿也会提供恢复入口。保存过程中继续输入的内容会保留为未提交草稿。若磁盘文件已被其他程序修改，保存会停止，页面提供「查看最新版本」和「下载我的草稿」，方便对照处理。
 
 目录页、文档页和编辑页都显示完整的逐级路径，可以点击目录返回。页面不直接展示 Coral URI，只提供复制按钮；复制结果是编码后的标准 URI，方便传给 Agent 或其他程序。文件夹和文档都可以复制 `coral://vault/<id>/<相对路径>` URI。
 
-网页和 MCP 都能重命名文件或文件夹，位置仍在原父目录中。文档需保留 `.md` 或 `.markdown` 扩展名。同名或版本冲突时，操作会被拒绝；正文、YAML 属性和附件会保留。重命名会改变路径和 URI，但不会修改 YAML 中的标题，也不会自动更新其他笔记中的链接。
+网页和 MCP 都能重命名文件或文件夹，重命名后的文件仍在原父目录中，文档需保留 `.md` 或 `.markdown` 扩展名。重命名会改变路径和 URI，YAML 中的标题保持原样。目录页和阅读页的「更多」菜单提供复制链接、重命名、移动和删除；移动可以选择当前知识库内已有文件夹，也可以回到根目录。
 
-笔记列表和阅读页提供「移动」按钮，可以选择当前知识库内的目标文件夹，也可以移回根目录。文件名、正文和 YAML 属性保持原样，同名文件不会被覆盖。请先创建目标文件夹；移动后 URI 会改变，已有链接及相对附件路径需要自行检查。MCP 使用 `move_document`，例如将 `work/2026-11-6.md` 的 `directory` 设为 `work/2026-11`。
+网页移动或重命名时，会维护同一知识库内可解析的 Markdown 普通链接、引用式链接、Wiki 链接、本地图片路径，以及链接目标中的 Coral URI，包括其他笔记对被整理文件的引用。操作会预检查版本和路径、备份将改写的文档，并拒绝同名覆盖或并发修改；代码、HTML 和 YAML 原文不改写。整理后，页面可展开查看已更新的笔记和未处理引用。
+
+MCP 的 `move_document`、`rename_document` 和 `rename_directory` 增加可选参数 `update_links`，默认 `false` 保留原始字节；需要同时维护引用时显式传 `true`。例如移动 `work/2026-11-6.md` 时，把 `directory` 设为 `work/2026-11`、`update_links` 设为 `true`。启用引用维护后，调用返回新 URI、版本、`updated_documents`、`unresolved_links` 和 `operation_id`。如果返回带 `recovery` 的错误，先查看受影响的 URI 和冲突，使用保留的备份处理，避免重复执行。
 
 ## 文档格式
 
 支持 YAML 属性、`[[文件]]`、`[[目录/文件|别名]]`、标题链接、标准 Markdown 相对链接和本地图片。跨目录引用同名文件时，应写明目录。
+
+### 段落首行缩进
+
+需要首行缩进的文档，在文件开头的 YAML 属性中设置 `paragraph_indent: 2em`：
+
+```markdown
+---
+paragraph_indent: 2em
+---
+
+# 阅读笔记
+
+普通叙述段落的首行缩进两个字宽，标题后的第一段也适用。
+```
+
+设置只影响这篇文档的顶层叙述段落；图片、图表及其图注、独立公式、列表、引用、代码和表格不叠加缩进。原始 Markdown 不需要补空格、全角空格或 Tab。编辑预览使用正在编辑的 YAML，保存后阅读页使用已保存的设置；未设置该属性的文档保持原有排版。
+
+改成 `paragraph_indent: none` 可关闭。更新时省略整个 YAML 属性块会保留原有属性，因此不能靠删除整个属性块来关闭。Agent 通过现有 `create_document.content` 或 `update_document.content` 写入属性即可，完整规则见 `get_writing_guide({topic:"writing"})`。
 
 ### 公式
 
@@ -159,7 +183,7 @@ Agent 可以调用 `get_writing_guide({})` 获取完整指南，或用 `topic` �
 | `topic` | 内容 |
 |---|---|
 | `workflow` | 读写流程、分页和版本冲突 |
-| `writing` | 书写规则和图表选择 |
+| `writing` | 书写规则、段落首行缩进和图表选择 |
 | `ci` | 写入前“说人话”审查、编辑边界与检查流程 |
 | `links` | 链接和附件 |
 | `math` | 公式语法和 JSON 转义 |
@@ -190,12 +214,12 @@ Agent 可以调用 `get_writing_guide({})` 获取完整指南，或用 `topic` �
 | `delete_vault` | `vault_id/version` | 将知识库移入回收站；外部库仅回收注册 |
 | `create_directory` | `vault_id/name`，可选 `directory` | 新文件夹的相对路径和 URI |
 | `delete_directory` | `uri/version` | 将文件夹及其文档、附件移入回收站 |
-| `rename_directory` | `uri/name/version` | 重命名文件夹，返回新路径、URI 和版本 |
+| `rename_directory` | `uri/name/version`，可选 `update_links` | 新路径、URI 和版本；启用引用维护时另含更新清单、未解决链接和操作编号 |
 | `create_document` | `vault_id/title`，可选 `content/directory/filename` | 新文档 URI、版本和元信息；`filename` 是不含 `.md` 的文件名 |
 | `update_document` | `uri/content/version` | 更新后的文档 URI、版本和元信息 |
 | `delete_document` | `uri/version` | 将文档移入回收站 |
-| `rename_document` | `uri/name/version` | 重命名文档文件，`name` 包含 Markdown 扩展名，返回新路径和 URI |
-| `move_document` | `uri/directory/version` | 将笔记移动到同一知识库内已有文件夹，`directory` 留空表示根目录；保留文件名和原始内容 |
+| `rename_document` | `uri/name/version`，可选 `update_links` | 重命名文档文件，`name` 包含 Markdown 扩展名；可同时维护库内引用 |
+| `move_document` | `uri/directory/version`，可选 `update_links` | 移动到同库已有文件夹，`directory` 留空表示根目录；保留文件名，可同时维护引用 |
 | `list_trash` | 可选 `vault_id` | 文件、文件夹和知识库的回收记录及版本 |
 | `restore_trash` | `vault_id/entry_id/version` | 恢复回收的文件或文件夹，拒绝同名覆盖 |
 | `restore_vault` | `vault_id/version` | 恢复回收的知识库或外部注册 |

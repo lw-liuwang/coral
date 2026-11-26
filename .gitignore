@@ -8,6 +8,8 @@
 # Dependencies and build output
 /sys/node_modules/
 /sys/dist/
+/sys/internal/assets/web/*
+!/sys/internal/assets/web/README.txt
 
 # Test artifacts
 /sys/playwright-report/

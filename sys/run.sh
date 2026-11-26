@@ -2,6 +2,14 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+if [ -x dist/coral ]; then
+  exec dist/coral
+fi
+if ! command -v "${CORAL_GO:-go}" >/dev/null 2>&1; then
+  echo "[coral] Building from source requires Go 1.26+." >&2
+  exit 1
+fi
+
 if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
   echo "[coral] Node.js 22.13+ and npm are required." >&2
   exit 1
@@ -11,4 +19,4 @@ if [ ! -d node_modules ]; then
   npm ci
 fi
 npm run build
-exec node dist/server.js
+exec dist/coral

@@ -8,6 +8,9 @@ import type { Config } from './config.js';
 import { AppError, decodedPathCandidates, hasFrontmatter, headings, parseMarkdown, parseUri, resourceUri, safeParts, serialize, titleFor } from './content.js';
 import { rewriteRelocationLinks, type UnresolvedLink } from './relocation-links.js';
 import { cjkSplit, ftsQuery, matchesSearchText, rankSearchDocument, searchSnippet, splitSearchQuery } from './search-query.js';
+import { documentLanguage, groupNotes, isDocumentLanguage, isNoteId, languageKeys, type DocumentLanguage, type NoteLanguageFamily } from './note-languages.js';
+
+export type { DocumentLanguage } from './note-languages.js';
 
 export const MAX_FILE_BYTES = 16 * 1024 * 1024;
 export interface Vault { id: string; name: string; description: string; root: string }
@@ -15,8 +18,11 @@ export interface Document {
   uri: string; vaultId: string; relative: string; title: string;
   version: string; size: number; raw: string; body: string;
   metadata: Record<string, unknown>; warning?: string;
+  noteUri?: string; language?: DocumentLanguage; noteVersion?: string;
+  languageVersions?: { language: DocumentLanguage; uri: string; title: string; version: string }[];
+  languageInfoIncomplete?: boolean; languageInfoError?: string;
 }
-export interface RelocationOptions { updateLinks?: boolean }
+export interface RelocationOptions { updateLinks?: boolean; noteVersion?: string }
 export interface RelocationReport {
   operation_id: string;
   updated_documents: { uri: string; version: string }[];
@@ -28,14 +34,17 @@ const relocationReportSchema = z.object({ operation_id: z.string().uuid(),
   unresolved_links: z.array(z.object({ uri: z.string(), target: z.string(), reason: z.string() })) });
 export function publicDocument(doc: Document) {
   return { uri: doc.uri, vault_id: doc.vaultId, title: doc.title, path: doc.relative,
-    size_bytes: doc.size, version: doc.version, mime_type: 'text/markdown' };
+    size_bytes: doc.size, version: doc.version, mime_type: 'text/markdown',
+    ...(doc.noteUri ? { note_uri: doc.noteUri, language: doc.language, language_versions: doc.languageVersions, note_version: doc.noteVersion } : {}),
+    ...(doc.languageInfoIncomplete ? { language_info_incomplete: true, language_info_error: doc.languageInfoError } : {}) };
 }
 const digest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 const today = () => new Date().toLocaleDateString('en-CA');
 const vaultStateSchema = z.object({ id: z.string(), name: z.string(), description: z.string(), root: z.string(),
   source: z.enum(['managed', 'external']), state: z.enum(['trash', 'removed']), deleted_at: z.string().datetime() });
 type VaultState = z.infer<typeof vaultStateSchema>;
-const trashRecordSchema = z.object({ path: z.string(), kind: z.enum(['file', 'directory']), deleted_at: z.string().datetime() });
+const trashRecordSchema = z.object({ path: z.string(), kind: z.enum(['file', 'directory']), deleted_at: z.string().datetime(),
+  members: z.array(z.string()).min(1).max(2).optional() });
 interface TrashItem { id: string; vault_id: string; vault_name: string; path: string; uri: string; kind: 'file' | 'directory'; deleted_at: string; version: string }
 const validId = (id: string) => /^[a-zA-Z0-9_-]+$/.test(id);
 const validVaultName = (name: string) => /^[a-z][a-z0-9_-]{0,63}$/.test(name);
@@ -267,6 +276,104 @@ export class VaultRegistry {
     return this.scanVault(this.vault(vaultId));
   }
 
+  noteLanguages(uri: string) {
+    const current = this.document(uri);
+    const inventory = isNoteId(current.metadata.coral_note_id) ? this.scan(current.vaultId) : { documents: [current], skipped: 0 };
+    if (inventory.skipped) throw new AppError('部分笔记无法读取，不能确认完整的语言版本关联，请修复后重试', 409);
+    const family = groupNotes(inventory.documents).byUri.get(current.uri);
+    if (!family) throw new AppError('读取期间笔记位置发生变化，请重新打开', 409);
+    const selected = family.versions.find(item => item.document.uri === current.uri)!.document;
+    if (selected.version !== current.version) throw new AppError('读取期间笔记内容发生变化，请重新打开', 409);
+    const signature = this.noteSignature(family);
+    return { ...family, current: selected, signature };
+  }
+
+  private noteSignature(family: NoteLanguageFamily) {
+    return digest(Buffer.from(JSON.stringify([family.primary.uri, ...family.versions.map(({ language, document }) =>
+      [language, document.uri, document.version]).sort((a, b) => String(a[0]).localeCompare(String(b[0])))])));
+  }
+
+  private withLanguages(doc: Document, family: NoteLanguageFamily): Document {
+    return { ...doc, noteUri: family.primary.uri, language: documentLanguage(doc), noteVersion: this.noteSignature(family),
+      languageVersions: family.versions.map(({ language, document }) => ({ language, uri: document.uri, title: document.title, version: document.version })) };
+  }
+
+  private describeDocument(doc: Document): Document {
+    try { return this.withLanguages(doc, this.noteLanguages(doc.uri)); }
+    catch (error) { return { ...doc, languageInfoIncomplete: true,
+      languageInfoError: error instanceof AppError ? error.message : '无法确认完整的语言版本关联' }; }
+  }
+
+  notes(vaultId: string): Document[] {
+    const grouped = groupNotes(this.scan(vaultId).documents);
+    return grouped.notes.map(doc => this.withLanguages(doc, grouped.byUri.get(doc.uri)!));
+  }
+
+  createLanguageVersion(uri: string, language: DocumentLanguage, content: string, version: string,
+    options: { sourceLanguage?: DocumentLanguage; title?: string } = {}): Document {
+    if (!isDocumentLanguage(language) || options.sourceLanguage !== undefined && !isDocumentLanguage(options.sourceLanguage)) throw new AppError('语言必须是 zh 或 en');
+    const family = this.noteLanguages(uri), source = family.current;
+    if (!version || source.version !== version) throw new AppError('原文已被修改，请重新打开后再添加语言版本', 409);
+    if (source.warning || family.issue) throw new AppError(family.issue ?? '原文的 YAML 属性无效，请修复后再添加语言版本', 409);
+    const sourceLanguage = family.grouped ? documentLanguage(source) : options.sourceLanguage ?? documentLanguage(source);
+    if (family.grouped && options.sourceLanguage !== undefined && options.sourceLanguage !== sourceLanguage) throw new AppError('原文语言与已保存的语言版本不一致', 409);
+    if (language === sourceLanguage) throw new AppError('新增语言必须与原文语言不同');
+    if (family.grouped && family.versions.some(item => item.language === language)) throw new AppError('该笔记已有此语言版本，请打开后编辑', 409);
+    const parsed = parseMarkdown(content);
+    const title = (options.title ?? (typeof parsed.metadata.title === 'string' ? parsed.metadata.title : source.title)).trim();
+    if (!title) throw new AppError('标题不能为空');
+    const id = isNoteId(source.metadata.coral_note_id) ? source.metadata.coral_note_id : randomUUID();
+    const sourceBytes = Buffer.from(serialize({ ...source.metadata, coral_note_id: id, coral_language: sourceLanguage, coral_primary: sourceLanguage === 'zh' }, source.body));
+    const translatedBytes = Buffer.from(serialize({ ...parsed.metadata, title, created: parsed.metadata.created ?? today(), updated: today(),
+      coral_note_id: id, coral_language: language, coral_primary: language === 'zh' }, parsed.body));
+    if (sourceBytes.length > MAX_FILE_BYTES || translatedBytes.length > MAX_FILE_BYTES) throw new AppError('文档超过 16 MiB 大小限制', 413);
+    const vault = this.vault(source.vaultId);
+    const primary = family.primary, extension = extname(primary.relative);
+    const name = basename(primary.relative, extension) + '.' + language + '.md';
+    if (Buffer.byteLength(name) > 255) throw new AppError('语言版本文件名过长，请先缩短笔记文件名');
+    const directory = dirname(primary.relative) === '.' ? '' : dirname(primary.relative).split(sep).join('/');
+    const relative = (directory ? directory + '/' : '') + name;
+    const target = this.filePath(vault, relative, false);
+    if (readdirSync(dirname(target)).some(existing => existing.toLowerCase() === name.toLowerCase())) throw new AppError('同名语言版本文件已存在，未覆盖原文件', 409);
+    const operationId = randomUUID(), folder = join(this.backupRoot(vault), operationId);
+    mkdirSync(folder);
+    writeFileSync(join(folder, 'original.md'), this.bytes(vault, source.relative), { flag: 'wx' });
+    const temporary = join(dirname(target), `.coral-${operationId}.tmp`);
+    const sourceVersion = digest(sourceBytes), targetVersion = digest(translatedBytes);
+    let targetCreated = false;
+    try {
+      writeFileSync(temporary, translatedBytes, { flag: 'wx' });
+      if (digest(this.bytes(vault, source.relative)) !== version) throw new AppError('原文已被修改，请重新打开后再添加语言版本', 409);
+      linkSync(temporary, target);
+      targetCreated = true;
+      this.replaceDocumentBytes(vault, source.relative, sourceBytes, version, join(folder, 'source'));
+      if (digest(this.bytes(vault, source.relative)) !== sourceVersion || digest(this.bytes(vault, relative)) !== targetVersion) throw new AppError('添加语言版本期间文件被其他程序修改', 409);
+      this.scans.delete(vault.id);
+      this.commit(vault, [source.relative, relative], `语言版本：${source.title} (${language})`);
+      const translated = this.document(resourceUri(vault.id, relative));
+      return this.withLanguages(translated, this.noteLanguages(translated.uri));
+    } catch (error) {
+      const conflicts: { uri: string; reason: string }[] = [];
+      try {
+        const current = digest(this.bytes(vault, source.relative));
+        if (current === sourceVersion) this.replaceDocumentBytes(vault, source.relative, readFileSync(join(folder, 'original.md')), sourceVersion);
+        else if (current !== version) conflicts.push({ uri: source.uri, reason: '原文已被外部修改，未覆盖；操作前备份已保留' });
+      } catch { conflicts.push({ uri: source.uri, reason: '原文无法自动恢复，操作前备份已保留' }); }
+      if (targetCreated) {
+        try {
+          if (digest(this.bytes(vault, relative)) !== targetVersion) throw new Error();
+          unlinkSync(target);
+        } catch { conflicts.push({ uri: resourceUri(vault.id, relative), reason: '新增版本已被外部修改或无法撤回，内容已保留' }); }
+      }
+      this.scans.delete(vault.id);
+      const message = (error as NodeJS.ErrnoException).code === 'EEXIST' ? '同名语言版本文件已存在，未覆盖原文件' : error instanceof AppError ? error.message : '无法添加语言版本';
+      throw new AppError(message + (conflicts.length ? '；部分更改未撤回，备份已保留' : '；本次添加已撤回'), error instanceof AppError ? error.status : 409,
+        { recovery: { operation_id: operationId, partial: conflicts.length > 0, conflicts, affected_uris: [source.uri, resourceUri(vault.id, relative)] } });
+    } finally {
+      if (existsSync(temporary)) unlinkSync(temporary);
+    }
+  }
+
   private scanVault(vault: Vault): { documents: Document[]; skipped: number } {
     const vaultId = vault.id;
     const root = realpathSync(vault.root);
@@ -313,7 +420,7 @@ export class VaultRegistry {
       const entry = { id: vault.id, name: vault.name, description: vault.description, uri: resourceUri(vault.id), version: this.vaultVersion(vault), external: Object.hasOwn(this.config.vaults, vault.id) };
       try {
         const scan = this.scanVault(vault);
-        return { ...entry, available: true, document_count: scan.documents.length, skipped_documents: scan.skipped };
+        return { ...entry, available: true, document_count: groupNotes(scan.documents).notes.length, skipped_documents: scan.skipped };
       } catch {
         return { ...entry, available: false, document_count: 0, skipped_documents: 0 };
       }
@@ -324,7 +431,9 @@ export class VaultRegistry {
     safeParts(directory, true);
     if (!Number.isInteger(cursor) || cursor < 0 || !Number.isInteger(limit) || limit < 1 || limit > 100) throw new AppError('分页参数无效');
     const scan = this.scan(vaultId);
-    const documents = scan.documents.filter(doc => !directory || doc.relative.startsWith(directory + '/'));
+    const grouped = groupNotes(scan.documents);
+    const documents = grouped.notes.filter(doc => !directory || doc.relative.startsWith(directory + '/'))
+      .map(doc => this.withLanguages(doc, grouped.byUri.get(doc.uri)!));
     return { vault_uri: resourceUri(vaultId), documents: documents.slice(cursor, cursor + limit).map(publicDocument),
       total: documents.length, skipped_documents: scan.skipped, next_cursor: cursor + limit < documents.length ? cursor + limit : null };
   }
@@ -335,8 +444,10 @@ export class VaultRegistry {
     const root = directory ? this.filePath(vault, directory) : realpathSync(vault.root);
     if (!lstatSync(root).isDirectory()) throw new AppError('目录不存在', 404);
     const scan = this.scanVault(vault);
+    const grouped = groupNotes(scan.documents);
     const prefix = directory ? directory + '/' : '';
-    const documents = scan.documents.filter(doc => doc.relative.startsWith(prefix) && !doc.relative.slice(prefix.length).includes('/'));
+    const documents = grouped.notes.filter(doc => doc.relative.startsWith(prefix) && !doc.relative.slice(prefix.length).includes('/'))
+      .map(doc => this.withLanguages(doc, grouped.byUri.get(doc.uri)!));
     const directories = readdirSync(root, { withFileTypes: true })
       .filter(entry => entry.isDirectory() && !entry.name.startsWith('.') && !entry.isSymbolicLink())
       .sort((a, b) => compareNames(a.name, b.name))
@@ -345,9 +456,9 @@ export class VaultRegistry {
         try { snapshot = this.directorySnapshot(join(root, entry.name)); } catch { /* Unreadable folders remain browsable. */ }
         return { name: entry.name, relative: prefix + entry.name, uri: resourceUri(vaultId, prefix + entry.name), version: snapshot?.version,
           file_count: snapshot?.file_count,
-          document_count: scan.documents.filter(doc => doc.relative.startsWith(prefix + entry.name + '/')).length };
+          document_count: grouped.notes.filter(doc => doc.relative.startsWith(prefix + entry.name + '/')).length };
       });
-    return { documents, directories, total: scan.documents.length, skipped: scan.skipped };
+    return { documents, directories, total: grouped.notes.length, skipped: scan.skipped };
   }
 
   listDirectories(vaultId: string) {
@@ -366,6 +477,15 @@ export class VaultRegistry {
   }
 
   moveDocument(uri: string, directory: string, version: string, options: RelocationOptions = {}): RelocationResult<Document> {
+    const current = this.document(uri);
+    const languages = isNoteId(current.metadata.coral_note_id) || options.noteVersion ? this.noteLanguages(uri) : undefined;
+    if (options.noteVersion && options.noteVersion !== languages?.signature) throw new AppError('笔记的语言版本已变化，请刷新后重试', 409);
+    if (languages?.grouped && languages.versions.length > 1) {
+      safeParts(directory, true);
+      const destinations = new Map(languages.versions.map(({ document }) => [document.relative,
+        (directory ? directory + '/' : '') + basename(document.relative)]));
+      return this.relocateLanguageGroup(languages.current, languages.versions.map(item => item.document), destinations, version, options);
+    }
     if (!options.updateLinks) return this.moveDocumentOnly(uri, directory, version);
     const entry = this.renameEntry(uri);
     if (entry.kind !== 'document') throw new AppError('仅支持移动笔记');
@@ -423,8 +543,26 @@ export class VaultRegistry {
   }
 
   rename(uri: string, name: string, version: string, options: RelocationOptions = {}): RelocationResult<ReturnType<VaultRegistry['renameEntry']>> {
+    const selected = this.renameEntry(uri);
+    if (selected.kind === 'document') {
+      const current = this.document(uri);
+      const languages = isNoteId(current.metadata.coral_note_id) || options.noteVersion ? this.noteLanguages(uri) : undefined;
+      if (options.noteVersion && options.noteVersion !== languages?.signature) throw new AppError('笔记的语言版本已变化，请刷新后重试', 409);
+      if (languages?.grouped && languages.versions.length > 1) {
+        name = this.validRenameName(name, 'document');
+        const extension = extname(name), stem = name.slice(0, -extension.length);
+        const destinations = new Map(languages.versions.map(({ language, document }) => {
+          const filename = document.uri === languages.primary.uri ? name : this.validRenameName(stem + '.' + language + extension, 'document');
+          const parent = document.relative.split('/').slice(0, -1).join('/');
+          return [document.relative, (parent ? parent + '/' : '') + filename];
+        }));
+        const renamed = this.relocateLanguageGroup(languages.current, languages.versions.map(item => item.document), destinations, version, options);
+        return { ...this.renameEntry(renamed.uri), ...(options.updateLinks ? { operation_id: renamed.operation_id,
+          updated_documents: renamed.updated_documents, unresolved_links: renamed.unresolved_links } : {}) };
+      }
+    }
     if (!options.updateLinks) return this.renameOnly(uri, name, version);
-    const entry = this.renameEntry(uri);
+    const entry = selected;
     name = name.trim();
     safeParts(name);
     const parent = entry.relative.split('/').slice(0, -1).join('/');
@@ -441,11 +579,7 @@ export class VaultRegistry {
     const entry = this.renameEntry(uri);
     if (!version) throw new AppError('缺少版本，请重新打开重命名页面');
     if (version !== entry.version) throw new AppError('内容已修改，请刷新后重试', 409);
-    name = name.trim();
-    if (!name || Buffer.byteLength(name) > 255 || /[\\/:*?"<>|\x00-\x1f\x7f]/.test(name) || /[. ]$/.test(name)
-      || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) throw new AppError('请输入有效的名称');
-    safeParts(name);
-    if (entry.kind === 'document' && !/\.(md|markdown)$/i.test(name)) throw new AppError('文件名称必须保留 .md 或 .markdown 扩展名');
+    name = this.validRenameName(name, entry.kind);
     const vault = this.vault(entry.vaultId);
     const source = this.filePath(vault, entry.relative);
     if (entry.kind === 'directory') {
@@ -482,6 +616,73 @@ export class VaultRegistry {
     return this.renameEntry(resourceUri(vault.id, relative));
   }
 
+  private validRenameName(name: string, kind: 'document' | 'directory') {
+    name = name.trim();
+    if (!name || Buffer.byteLength(name) > 255 || /[\\/:*?"<>|\x00-\x1f\x7f]/.test(name) || /[. ]$/.test(name)
+      || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) throw new AppError('请输入有效的名称');
+    safeParts(name);
+    if (kind === 'document' && !/\.(md|markdown)$/i.test(name)) throw new AppError('文件名称必须保留 .md 或 .markdown 扩展名');
+    return name;
+  }
+
+  private relocateLanguageGroup(current: Document, members: Document[], destinations: ReadonlyMap<string, string>, version: string, options: RelocationOptions): RelocationResult<Document> {
+    if (!version || version !== current.version) throw new AppError('文档已被修改，请刷新后重试', 409);
+    this.assertLanguageMembers(current, members);
+    const vault = this.vault(current.vaultId), occupied = new Set<string>();
+    for (const member of members) {
+      const relative = destinations.get(member.relative)!;
+      safeParts(relative);
+      const parent = relative.split('/').slice(0, -1).join('/');
+      const directory = parent ? this.filePath(vault, parent) : realpathSync(vault.root);
+      if (!lstatSync(directory).isDirectory()) throw new AppError('目标不是文件夹');
+      const key = relative.toLowerCase();
+      if (occupied.has(key)) throw new AppError('语言版本在目标位置存在同名文件', 409);
+      occupied.add(key);
+      if (readdirSync(directory).some(name => name.toLowerCase() === basename(relative).toLowerCase()
+        && (parent !== member.relative.split('/').slice(0, -1).join('/') || name !== basename(member.relative)))) {
+        throw new AppError('目标位置已有同名文件或文件夹', 409);
+      }
+      if (this.document(member.uri).version !== member.version) throw new AppError('语言版本已被修改，请刷新后重试', 409);
+    }
+    const locations = new Map(members.map(member => [member.relative, member.relative]));
+    const relocate = (from: string, to: string, expected: string) => {
+      if (from === to) return;
+      const parent = to.split('/').slice(0, -1).join('/');
+      if (from.split('/').slice(0, -1).join('/') === parent) this.renameOnly(resourceUri(vault.id, from), basename(to), expected, false);
+      else this.moveDocumentOnly(resourceUri(vault.id, from), parent, expected, false);
+    };
+    const result = this.maintainRelocationLinks(this.renameEntry(current.uri), destinations.get(current.relative)!, version, () => {
+      this.assertLanguageMembers(current, members);
+      for (const member of members) {
+        const relative = destinations.get(member.relative)!;
+        relocate(member.relative, relative, member.version);
+        locations.set(member.relative, relative);
+      }
+      return this.document(resourceUri(vault.id, destinations.get(current.relative)!));
+    }, () => {
+      let failed = false;
+      for (const member of [...members].reverse()) {
+        const location = locations.get(member.relative)!;
+        if (location === member.relative) continue;
+        try {
+          relocate(location, member.relative, member.version);
+          locations.set(member.relative, member.relative);
+        } catch { failed = true; }
+      }
+      if (failed) throw new AppError('部分语言版本无法移回原位置', 409);
+    }, { mapping: destinations, locations, updateLinks: options.updateLinks === true });
+    if (options.updateLinks) return result;
+    return this.document(result.uri);
+  }
+
+  private assertLanguageMembers(current: Document, members: Document[]) {
+    const latest = this.noteLanguages(current.uri);
+    if (!latest.grouped || latest.versions.length !== members.length || latest.versions.some(({ document }) =>
+      !members.some(member => member.uri === document.uri && member.version === document.version))) {
+      throw new AppError('笔记的语言版本已变化，请刷新后重试', 409);
+    }
+  }
+
   relocationReport(vaultId: string, operationId: string): RelocationReport {
     if (!z.string().uuid().safeParse(operationId).success) throw new AppError('整理操作编号无效');
     const vault = this.vault(vaultId);
@@ -512,20 +713,21 @@ export class VaultRegistry {
   }
 
   private maintainRelocationLinks<T extends { uri: string; version: string }>(entry: ReturnType<VaultRegistry['renameEntry']>,
-    relative: string, version: string, relocate: () => T, undo: () => void): T & RelocationReport {
+    relative: string, version: string, relocate: () => T, undo: () => void,
+    group?: { mapping: ReadonlyMap<string, string>; locations: Map<string, string>; updateLinks: boolean }): T & RelocationReport {
     if (!version || version !== entry.version) throw new AppError('内容已修改，请刷新后重试', 409);
     const vault = this.vault(entry.vaultId);
     const scan = this.scan(vault.id);
-    if (scan.skipped || scan.documents.some(doc => doc.warning)) throw new AppError('部分笔记无法完整读取，尚未整理；请先修复后重试', 409);
+    if ((!group || group.updateLinks) && (scan.skipped || scan.documents.some(doc => doc.warning))) throw new AppError('部分笔记无法完整读取，尚未整理；请先修复后重试', 409);
     const inventory = this.relocationInventory(vault);
     const mapping = new Map([...inventory.keys()].map(path => [path,
-      path === entry.relative ? relative : entry.kind === 'directory' && path.startsWith(entry.relative + '/') ? relative + path.slice(entry.relative.length) : path]));
+      group ? group.mapping.get(path) ?? path : path === entry.relative ? relative : entry.kind === 'directory' && path.startsWith(entry.relative + '/') ? relative + path.slice(entry.relative.length) : path]));
     const linkMapping = new Map([...mapping].filter(([path]) => {
       const entry = inventory.get(path)!;
       return !entry.symbolic && path.split('/').every(part => !part.startsWith('.'));
     }));
     const filePaths = new Set([...linkMapping.keys()].filter(path => !inventory.get(path)!.directory));
-    const rewrites = rewriteRelocationLinks(scan.documents, linkMapping, filePaths);
+    const rewrites = !group || group.updateLinks ? rewriteRelocationLinks(scan.documents, linkMapping, filePaths) : { documents: [], unresolved_links: [] };
     const operationId = randomUUID(), folder = join(this.backupRoot(vault), operationId);
     mkdirSync(join(folder, 'originals'), { recursive: true });
     const documentsByPath = new Map(scan.documents.map(doc => [doc.relative, doc]));
@@ -538,6 +740,7 @@ export class VaultRegistry {
     }
     const report: RelocationReport = { operation_id: operationId, updated_documents: [], unresolved_links: rewrites.unresolved_links };
     const state = { status: 'prepared', original: entry.relative, destination: relative, report,
+      ...(group ? { moves: [...group.mapping].map(([original, destination]) => ({ original, destination })) } : {}),
       files: files.map(file => ({ original: file.original.relative, destination: file.relative, before: file.original.version, after: digest(file.bytes) })) };
     const saveState = () => {
       const temporary = join(folder, randomUUID() + '.tmp');
@@ -545,11 +748,12 @@ export class VaultRegistry {
       renameSync(temporary, join(folder, 'state.json'));
     };
     let relocated = false;
+    const actualPath = (path: string) => group?.locations.get(path) ?? (relocated ? mapping.get(path)! : path);
     const assertState = () => {
       const current = this.relocationInventory(vault);
       if (current.size !== inventory.size) throw new AppError('整理期间知识库目录发生变化，请刷新后重试', 409);
       for (const [path, before] of inventory) {
-        const expectedPath = relocated ? mapping.get(path)! : path;
+        const expectedPath = actualPath(path);
         const actual = current.get(expectedPath);
         if (!actual || actual.directory !== before.directory || actual.symbolic !== before.symbolic
           || (!before.directory && !documentsByPath.has(path) && actual.stamp !== before.stamp)) {
@@ -559,7 +763,7 @@ export class VaultRegistry {
       for (const doc of scan.documents) {
         const file = filesByUri.get(doc.uri);
         const expected = file?.applied ? digest(file.bytes) : doc.version;
-        const path = relocated ? mapping.get(doc.relative)! : doc.relative;
+        const path = actualPath(doc.relative);
         if (digest(this.bytes(vault, path)) !== expected) throw new AppError('整理期间文档已被其他程序修改，请刷新后重试', 409);
       }
     };
@@ -585,10 +789,10 @@ export class VaultRegistry {
       report.updated_documents = files.map(file => ({ uri: resourceUri(vault.id, file.relative), version: digest(file.bytes) }));
       state.status = 'complete'; saveState();
       this.scans.delete(vault.id);
-      this.commit(vault, [...new Set([entry.relative, relative, ...files.map(file => file.relative)])], `整理：${entry.relative} → ${relative}`);
+      this.commit(vault, [...new Set([entry.relative, relative, ...(group ? [...group.mapping].flat() : []), ...files.map(file => file.relative)])], `整理：${entry.relative} → ${relative}`);
       return { ...result, ...('raw' in result ? this.document(result.uri) : this.renameEntry(result.uri)), ...report };
     } catch (error) {
-      if (!relocated && relative !== entry.relative && !existsSync(join(vault.root, entry.relative)) && existsSync(join(vault.root, relative))) relocated = true;
+      if (!group && !relocated && relative !== entry.relative && !existsSync(join(vault.root, entry.relative)) && existsSync(join(vault.root, relative))) relocated = true;
       const conflicts: { uri: string; reason: string }[] = [];
       for (const file of [...files].reverse()) {
         if (!file.applied) continue;
@@ -603,9 +807,12 @@ export class VaultRegistry {
         try { if (digest(this.bytes(vault, file.relative)) === file.original.version) continue; } catch { /* Report a missing or replaced file too. */ }
         conflicts.push({ uri: resourceUri(vault.id, file.relative), reason: '写入时文件被外部替换或无法恢复，原文件备份已保留' });
       }
-      if (relocated && relative !== entry.relative) {
+      if (group ? [...group.locations].some(([original, location]) => original !== location) : relocated && relative !== entry.relative) {
         try { assertState(); undo(); relocated = false; }
-        catch { conflicts.push({ uri: resourceUri(vault.id, relative), reason: '原路径已占用或整理后的文件发生变化，未自动移回' }); }
+        catch {
+          const paths = group ? [...group.locations].filter(([original, location]) => original !== location).map(([, location]) => location) : [relative];
+          for (const path of paths) conflicts.push({ uri: resourceUri(vault.id, path), reason: '原路径已占用或整理后的文件发生变化，未自动移回' });
+        }
       }
       state.status = conflicts.length ? 'partial' : 'rolled_back';
       try { saveState(); } catch { /* The prepared originals and earlier state remain available for recovery. */ }
@@ -613,7 +820,7 @@ export class VaultRegistry {
       const message = error instanceof AppError ? error.message : '无法完成整理';
       throw new AppError(message + (conflicts.length ? '；部分更改未撤回，整理记录及可用备份已保留' : '；本次整理已撤回'), error instanceof AppError ? error.status : 500,
         { recovery: { operation_id: operationId, partial: conflicts.length > 0, conflicts,
-          affected_uris: [...new Set([resourceUri(vault.id, relocated ? relative : entry.relative), ...conflicts.map(conflict => conflict.uri),
+          affected_uris: [...new Set([resourceUri(vault.id, actualPath(entry.relative)), ...(group ? [...group.locations.values()].map(path => resourceUri(vault.id, path)) : []), ...conflicts.map(conflict => conflict.uri),
             ...files.filter(file => file.applied).map(file => resourceUri(vault.id, file.relative))])] } });
     }
   }
@@ -638,7 +845,7 @@ export class VaultRegistry {
     if (end < sectionEnd && end > start && /[\uD800-\uDBFF]/.test(doc.raw[end - 1]) && /[\uDC00-\uDFFF]/.test(doc.raw[end])) {
       end = end - start === 1 ? end + 1 : end - 1;
     }
-    return { ...publicDocument(doc), content: doc.raw.slice(start, end), offset,
+    return { ...publicDocument(this.describeDocument(doc)), content: doc.raw.slice(start, end), offset,
       next_offset: end < sectionEnd ? end - sectionStart : null, total_chars: sectionEnd - sectionStart,
       truncated: end < sectionEnd, start_line: doc.raw.slice(0, start).split('\n').length,
       headings: offset === 0 && !heading ? outline.slice(0, 100) : [], headings_truncated: outline.length > 100 };
@@ -650,6 +857,7 @@ export class VaultRegistry {
     if (!query || query.length > 500 || !Number.isInteger(limit) || limit < 1 || limit > 100 || !Number.isInteger(cursor) || cursor < 0) throw new AppError('搜索参数无效');
     const vaults = vaultId ? [this.vault(vaultId)] : [...this.vaults.values()];
     const documents = new Map<string, Document>();
+    const families = new Map<string, NoteLanguageFamily>();
     const unavailable: string[] = [];
     let skipped = 0;
     this.db.exec('BEGIN');
@@ -661,7 +869,9 @@ export class VaultRegistry {
         try { scan = this.scanVault(vault); }
         catch (error) { if (vaultId) throw error; unavailable.push(resourceUri(vault.id)); continue; }
         skipped += scan.skipped;
-        for (const doc of scan.documents) {
+        const grouped = groupNotes(scan.documents);
+        for (const [uri, family] of grouped.byUri) families.set(uri, family);
+        for (const doc of grouped.notes) {
           documents.set(doc.uri, doc);
           if (this.indexed.get(doc.uri) !== doc.version) {
             if (this.indexed.has(doc.uri)) remove.run(doc.uri);
@@ -679,7 +889,7 @@ export class VaultRegistry {
       ? this.db.prepare('SELECT uri FROM search WHERE search MATCH ? ORDER BY bm25(search), uri').all(ftsQuery(query)).map(row => documents.get(row.uri as string)!)
       : [...documents.values()].filter(doc => terms.every(term => matchesSearchText(doc.title + '\n' + doc.relative, [term]) || matchesSearchText(doc.body, [term]))).sort((a, b) => a.uri.localeCompare(b.uri));
     candidates.sort((a, b) => rankSearchDocument(a, terms) - rankSearchDocument(b, terms));
-    const results = candidates.slice(cursor, cursor + limit).map(doc => ({ ...publicDocument(doc), ...searchSnippet(doc.raw, doc.body, terms) }));
+    const results = candidates.slice(cursor, cursor + limit).map(doc => ({ ...publicDocument(this.withLanguages(doc, families.get(doc.uri)!)), ...searchSnippet(doc.raw, doc.body, terms) }));
     return { results, total: candidates.length, next_cursor: cursor + limit < candidates.length ? cursor + limit : null,
       unavailable_vaults: unavailable, skipped_documents: skipped };
   }
@@ -725,10 +935,17 @@ export class VaultRegistry {
     if (version && version !== old.version) throw new AppError('文档已被修改，请重新打开后再保存', 409);
     if (Buffer.byteLength(raw) > MAX_FILE_BYTES) throw new AppError('文档超过 16 MiB 大小限制', 413);
     const parsed = parseMarkdown(raw);
-    const metadata = { ...(hasFrontmatter(raw) ? parsed.metadata : old.metadata), updated: today() };
+    const metadata: Record<string, unknown> = { ...(hasFrontmatter(raw) ? parsed.metadata : old.metadata), updated: today() };
+    if (isNoteId(old.metadata.coral_note_id) && isDocumentLanguage(old.metadata.coral_language) && typeof old.metadata.coral_primary === 'boolean') {
+      for (const key of languageKeys) {
+        if (Object.hasOwn(parsed.metadata, key) && parsed.metadata[key] !== old.metadata[key]) throw new AppError('语言版本关联字段不能在正文编辑中更改');
+        metadata[key] = old.metadata[key];
+      }
+    }
     this.replaceDocumentBytes(this.vault(old.vaultId), old.relative, Buffer.from(serialize(metadata, parsed.body)), old.version);
     this.commit(this.vault(old.vaultId), [old.relative], `页面：编辑 ${old.title}`);
-    return this.document(uri);
+    const updated = this.document(uri);
+    return this.describeDocument(updated);
   }
 
   private backupRoot(vault: Vault, create = true) {
@@ -765,9 +982,18 @@ export class VaultRegistry {
     } finally { if (existsSync(temporary)) unlinkSync(temporary); }
   }
 
-  delete(uri: string, version?: string) {
+  delete(uri: string, version?: string, options: { noteVersion?: string } = {}) {
     const doc = this.document(uri);
     if (version && version !== doc.version) throw new AppError('文档已修改，请刷新后重试', 409);
+    const languages = isNoteId(doc.metadata.coral_note_id) || options.noteVersion ? this.noteLanguages(uri) : undefined;
+    if (options.noteVersion && options.noteVersion !== languages?.signature) throw new AppError('笔记的语言版本已变化，请刷新后重试', 409);
+    if (languages?.grouped && languages.versions.length > 1) {
+      if (version && version !== languages.current.version) throw new AppError('文档已修改，请刷新后重试', 409);
+      const members = languages.versions.map(item => item.document);
+      this.moveLanguageGroupToTrash(languages.primary, members);
+      this.commit(this.vault(doc.vaultId), members.map(member => member.relative), `页面：删除 ${languages.primary.title}（全部语言版本）`);
+      return;
+    }
     this.moveToTrash(doc.vaultId, doc.relative);
     this.commit(this.vault(doc.vaultId), [doc.relative], `页面：删除 ${doc.title}`);
   }
@@ -806,6 +1032,14 @@ export class VaultRegistry {
   private moveToTrash(vaultId: string, path: string) {
     const vault = this.vault(vaultId);
     const target = this.filePath(vault, path);
+    const batch = this.createTrashBatch(vault);
+    writeFileSync(join(batch, '.coral-trash.json'), JSON.stringify({ path, kind: lstatSync(target).isDirectory() ? 'directory' : 'file', deleted_at: new Date().toISOString() }) + '\n', { flag: 'wx' });
+    const destination = join(batch, path);
+    mkdirSync(dirname(destination), { recursive: true });
+    renameSync(target, destination);
+  }
+
+  private createTrashBatch(vault: Vault) {
     const trash = join(realpathSync(vault.root), '.trash');
     try { mkdirSync(trash); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
@@ -813,10 +1047,88 @@ export class VaultRegistry {
     if (stat.isSymbolicLink() || !stat.isDirectory()) throw new AppError('知识库回收站不可用');
     const batch = join(trash, randomUUID());
     mkdirSync(batch);
-    writeFileSync(join(batch, '.coral-trash.json'), JSON.stringify({ path, kind: lstatSync(target).isDirectory() ? 'directory' : 'file', deleted_at: new Date().toISOString() }) + '\n', { flag: 'wx' });
-    const destination = join(batch, path);
-    mkdirSync(dirname(destination), { recursive: true });
-    renameSync(target, destination);
+    return batch;
+  }
+
+  private transferLanguageFile(source: string, destination: string, version: string) {
+    const original = lstatSync(source);
+    if (!original.isFile() || original.isSymbolicLink() || original.size > MAX_FILE_BYTES || digest(readFileSync(source)) !== version) {
+      throw new AppError('语言版本已被修改，请刷新后重试', 409);
+    }
+    linkSync(source, destination);
+    const reserved = lstatSync(destination);
+    try {
+      const current = lstatSync(source);
+      if (current.dev !== reserved.dev || current.ino !== reserved.ino || digest(readFileSync(source)) !== version) {
+        throw new AppError('语言版本已被其他程序修改，请刷新后重试', 409);
+      }
+      unlinkSync(source);
+    } catch (error) {
+      // Remove only the exclusive link created here, preserving external replacements or edits.
+      try {
+        const current = lstatSync(destination);
+        if (current.dev === reserved.dev && current.ino === reserved.ino && digest(readFileSync(destination)) === version) unlinkSync(destination);
+      } catch { /* An external change remains available at its actual path. */ }
+      throw error;
+    }
+  }
+
+  private saveLanguageTrashRecord(batch: string, primary: string, members: string[], deletedAt: string) {
+    const temporary = join(batch, randomUUID() + '.tmp');
+    writeFileSync(temporary, JSON.stringify({ path: members.includes(primary) ? primary : members[0], kind: 'file', members, deleted_at: deletedAt }) + '\n', { flag: 'wx' });
+    renameSync(temporary, join(batch, '.coral-trash.json'));
+  }
+
+  private removeEmptyTrashBatch(batch: string, paths: string[]) {
+    const metadata = join(batch, '.coral-trash.json');
+    if (existsSync(metadata)) unlinkSync(metadata);
+    for (const path of paths) {
+      let empty = dirname(join(batch, path));
+      while (empty === batch || empty.startsWith(batch + sep)) {
+        try { rmdirSync(empty); } catch { break; }
+        empty = dirname(empty);
+      }
+    }
+  }
+
+  private moveLanguageGroupToTrash(primary: Document, members: Document[]) {
+    const vault = this.vault(primary.vaultId);
+    this.assertLanguageMembers(primary, members);
+    for (const member of members) {
+      if (this.document(member.uri).version !== member.version) throw new AppError('语言版本已被修改，请刷新后重试', 409);
+    }
+    const batch = this.createTrashBatch(vault), deletedAt = new Date().toISOString(), moved: Document[] = [];
+    this.saveLanguageTrashRecord(batch, primary.relative, members.map(member => member.relative), deletedAt);
+    try {
+      this.assertLanguageMembers(primary, members);
+      for (const member of members) {
+        const target = join(batch, member.relative);
+        mkdirSync(dirname(target), { recursive: true });
+        this.transferLanguageFile(this.filePath(vault, member.relative), target, member.version);
+        moved.push(member);
+      }
+      for (const member of members) {
+        if (digest(this.bytes({ ...vault, root: batch }, member.relative)) !== member.version) throw new AppError('删除期间语言版本被其他程序修改', 409);
+      }
+      this.scans.delete(vault.id);
+    } catch (error) {
+      const conflicts: { uri: string; reason: string }[] = [];
+      for (const member of moved.reverse()) {
+        try { this.transferLanguageFile(join(batch, member.relative), this.filePath(vault, member.relative, false), member.version); }
+        catch { conflicts.push({ uri: member.uri, reason: '原位置已占用或回收内容发生变化，未自动恢复' }); }
+      }
+      const remaining = members.filter(member => existsSync(join(batch, member.relative))).map(member => member.relative);
+      for (const path of remaining) if (!conflicts.some(item => item.uri === resourceUri(vault.id, path))) {
+        conflicts.push({ uri: resourceUri(vault.id, path), reason: '文件在删除期间发生变化，回收内容已保留' });
+      }
+      try {
+        if (remaining.length) this.saveLanguageTrashRecord(batch, primary.relative, remaining, deletedAt);
+        else this.removeEmptyTrashBatch(batch, members.map(member => member.relative));
+      } catch { conflicts.push({ uri: primary.uri, reason: '无法更新回收记录，请按操作编号检查保留的文件' }); }
+      this.scans.delete(vault.id);
+      throw new AppError((error instanceof AppError ? error.message : '无法删除全部语言版本') + (conflicts.length ? '；部分文件保留在回收站' : '；本次删除已撤回'), error instanceof AppError ? error.status : 500,
+        { recovery: { operation_id: basename(batch), partial: conflicts.length > 0, conflicts, affected_uris: members.map(member => member.uri) } });
+    }
   }
 
   private trashBatch(vaultId: string, id: string) {
@@ -832,14 +1144,20 @@ export class VaultRegistry {
     const metadata = join(batch, '.coral-trash.json');
     if (lstatSync(metadata).isSymbolicLink()) throw new AppError('回收记录无效');
     const record = trashRecordSchema.parse(JSON.parse(readFileSync(metadata, 'utf8')));
-    let target = batch;
-    for (const part of safeParts(record.path)) {
-      target = join(target, part);
-      if (lstatSync(target).isSymbolicLink()) throw new AppError('回收记录不允许符号链接路径');
-    }
-    const stat = lstatSync(target);
-    if (record.kind === 'directory' ? !stat.isDirectory() : !stat.isFile()) throw new AppError('回收记录类型无效');
-    return { batch, target, vault, record, version: this.directorySnapshot(batch).version };
+    const paths = record.members ?? [record.path];
+    if (record.members && (record.kind !== 'file' || !record.members.includes(record.path)
+      || new Set(paths.map(path => path.toLowerCase())).size !== paths.length)) throw new AppError('语言版本回收记录无效');
+    const members = paths.map(path => {
+      let target = batch;
+      for (const part of safeParts(path)) {
+        target = join(target, part);
+        if (lstatSync(target).isSymbolicLink()) throw new AppError('回收记录不允许符号链接路径');
+      }
+      const stat = lstatSync(target);
+      if (record.kind === 'directory' ? !stat.isDirectory() : !stat.isFile()) throw new AppError('回收记录类型无效');
+      return { path, target };
+    });
+    return { batch, target: members.find(member => member.path === record.path)!.target, members, vault, record, version: this.directorySnapshot(batch).version };
   }
 
   listTrash(vaultId?: string) {
@@ -877,6 +1195,10 @@ export class VaultRegistry {
   restoreTrash(vaultId: string, id: string, version: string) {
     const entry = this.trashBatch(vaultId, id);
     if (!version || version !== entry.version) throw new AppError('回收内容已变化，请刷新后重试', 409);
+    if (entry.record.members) {
+      this.restoreLanguageGroup(entry);
+      return;
+    }
     const target = this.filePath(entry.vault, entry.record.path, false);
     if (existsSync(target)) throw new AppError('原位置已有同名内容，请先重命名或移走后再恢复', 409);
     mkdirSync(dirname(target), { recursive: true });
@@ -889,6 +1211,48 @@ export class VaultRegistry {
       empty = dirname(empty);
     }
     this.commit(entry.vault, [entry.record.path], `恢复：${entry.record.path}`);
+  }
+
+  private restoreLanguageGroup(entry: ReturnType<VaultRegistry['trashBatch']>) {
+    const members = entry.members.map(member => ({ ...member, destination: this.filePath(entry.vault, member.path, false),
+      version: digest(this.bytes({ ...entry.vault, root: entry.batch }, member.path)) }));
+    for (const member of members) {
+      const parent = dirname(member.destination);
+      if (existsSync(member.destination) || existsSync(parent) && readdirSync(parent).some(name => name.toLowerCase() === basename(member.path).toLowerCase())) {
+        throw new AppError('原位置已有同名内容，全部语言版本均未恢复', 409);
+      }
+    }
+    const restored: typeof members = [];
+    try {
+      for (const member of members) {
+        mkdirSync(dirname(member.destination), { recursive: true });
+        this.transferLanguageFile(member.target, member.destination, member.version);
+        restored.push(member);
+      }
+      for (const member of members) {
+        if (digest(this.bytes(entry.vault, member.path)) !== member.version) throw new AppError('恢复期间语言版本被其他程序修改', 409);
+      }
+    } catch (error) {
+      const conflicts: { uri: string; reason: string }[] = [];
+      for (const member of restored.reverse()) {
+        try { this.transferLanguageFile(this.filePath(entry.vault, member.path), member.target, member.version); }
+        catch { conflicts.push({ uri: resourceUri(entry.vault.id, member.path), reason: '恢复后的文件已变化或回收位置被占用，未自动撤回' }); }
+      }
+      const remaining = members.filter(member => existsSync(member.target)).map(member => member.path);
+      for (const member of members) if (existsSync(member.destination) && !conflicts.some(item => item.uri === resourceUri(entry.vault.id, member.path))) {
+        conflicts.push({ uri: resourceUri(entry.vault.id, member.path), reason: '恢复期间目标被其他程序写入，文件已保留' });
+      }
+      try {
+        if (remaining.length) this.saveLanguageTrashRecord(entry.batch, entry.record.path, remaining, entry.record.deleted_at);
+        else this.removeEmptyTrashBatch(entry.batch, members.map(member => member.path));
+      } catch { conflicts.push({ uri: resourceUri(entry.vault.id, entry.record.path), reason: '无法更新回收记录，请按操作编号检查实际恢复位置' }); }
+      this.scans.delete(entry.vault.id);
+      throw new AppError((error instanceof AppError ? error.message : '无法恢复全部语言版本') + (conflicts.length ? '；部分文件未撤回，请检查恢复结果' : '；本次恢复已撤回'), error instanceof AppError ? error.status : 500,
+        { recovery: { operation_id: basename(entry.batch), partial: conflicts.length > 0, conflicts, affected_uris: members.map(member => resourceUri(entry.vault.id, member.path)) } });
+    }
+    this.removeEmptyTrashBatch(entry.batch, members.map(member => member.path));
+    this.scans.delete(entry.vault.id);
+    this.commit(entry.vault, members.map(member => member.path), `恢复：${entry.record.path}（全部语言版本）`);
   }
 
   purgeTrash(vaultId: string, id: string, version: string) {

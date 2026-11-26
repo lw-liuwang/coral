@@ -6,19 +6,21 @@ Coral 是一个自托管知识库，直接读写磁盘上的 Markdown 文件。�
 
 ## 启动
 
-需要 **Node.js 22.13+** 和 npm，推荐 Node.js 22 或 24 LTS。建议同时安装 Git，用于保存网页写操作的版本历史。
+Coral 后端使用 Go，网页资源打包在可执行文件中。运行已构建的程序不需要 Node.js、npm 或 Go。建议安装 Git，用于保存网页写操作的版本历史。
+
+从源码首次构建需要 **Go 1.26+、Node.js 22.13+ 和 npm**。Node.js 只用于构建浏览器中的编辑器、公式和图表组件。
 
 ### Windows
 
-安装 Node.js 后，双击项目根目录的 `run.cmd`，或在 PowerShell 中执行：
+双击项目根目录的 `run.cmd`，或在 PowerShell 中执行：
 
 ```powershell
 .\run.cmd
 ```
 
-脚本会检查 Node.js 版本。如果缺少 `sys/node_modules/`，会先执行 `npm ci`，再构建并启动服务。无需安装 Bash 或 WSL。
+已有 `sys/dist/coral.exe` 时，脚本直接启动它。首次从源码运行时，脚本会检查构建工具、安装缺少的 npm 依赖，并构建 Go 程序。无需安装 Bash 或 WSL。
 
-运行时保留终端窗口，按 `Ctrl+C` 停止。出错时窗口会保留错误信息。更新项目依赖后，在 `sys/` 中执行 `npm.cmd ci` 重新安装。
+运行时保留终端窗口，按 `Ctrl+C` 停止。出错时窗口会保留错误信息。更新源码后，在 `sys/` 中执行 `npm.cmd ci` 和 `npm.cmd run build`，再手动启动服务。
 
 ### Linux / macOS
 
@@ -28,7 +30,7 @@ Coral 是一个自托管知识库，直接读写磁盘上的 Markdown 文件。�
 bash sys/run.sh
 ```
 
-脚本会安装缺少的依赖、构建并启动服务。
+已有 `sys/dist/coral` 时直接运行；否则安装缺少的浏览器构建依赖、构建 Go 程序并启动。
 
 启动后，打开 [http://127.0.0.1:8300](http://127.0.0.1:8300)。MCP 地址是 [http://127.0.0.1:8300/mcp](http://127.0.0.1:8300/mcp)。
 
@@ -56,6 +58,8 @@ bash sys/run.sh
 
 左栏用于切换知识库和文件夹，右侧显示目录、笔记或编辑器。当前文件夹自动展开并高亮。
 
+阅读页从左到右依次为知识库与文件夹导航、独立的「文章目录」、正文。文章目录按当前笔记的标题层级排列，点击章节直接跳转，滚动正文时高亮当前章节；目录较长时可在栏内滚动，也可收起。没有章节标题的笔记不显示文章目录。
+
 当前浏览器会记住每个目录上次打开的笔记，以及每篇笔记读到的章节和滚动位置。刷新或重新打开时恢复位置，显式标题链接优先；点击「上一篇 / 下一篇」则从相邻笔记开头阅读。回到阅读页或重新激活窗口时，页面会检查磁盘版本，有更新就重新加载并恢复位置；编辑页保留当前草稿。阅读记录不代表已经读完，也不会跨浏览器同步。
 
 在侧栏输入关键词并回车即可搜索全部知识库；结果页可进一步选择单个知识库。空白分隔的关键词需要同时命中，例如 `KV 带宽` 可以找到「KV Cache 的容量与带宽」。精确标题或文件名优先，其次是标题、路径命中，再按正文相关度排序。结果显示所属知识库和相对路径，点击路径可打开所在目录并定位到文件。从结果打开笔记后，可以「返回搜索」回到原关键词、范围和页码；编辑、重命名和移动会保留这个返回入口。搜索支持分页和无 JavaScript 的表单提交，使用本地关键词索引，不运行模型。
@@ -69,6 +73,14 @@ bash sys/run.sh
 网页移动或重命名时，会维护同一知识库内可解析的 Markdown 普通链接、引用式链接、Wiki 链接、本地图片路径，以及链接目标中的 Coral URI，包括其他笔记对被整理文件的引用。操作会预检查版本和路径、备份将改写的文档，并拒绝同名覆盖或并发修改；代码、HTML 和 YAML 原文不改写。整理后，页面可展开查看已更新的笔记和未处理引用。
 
 MCP 的 `move_document`、`rename_document` 和 `rename_directory` 增加可选参数 `update_links`，默认 `false` 保留原始字节；需要同时维护引用时显式传 `true`。例如移动 `work/2026-11-6.md` 时，把 `directory` 设为 `work/2026-11`、`update_links` 设为 `true`。启用引用维护后，调用返回新 URI、版本、`updated_documents`、`unresolved_links` 和 `operation_id`。如果返回带 `recovery` 的错误，先查看受影响的 URI 和冲突，使用保留的备份处理，避免重复执行。
+
+## 中英文版本
+
+一篇笔记可以保存中文和英文两个 Markdown 文件，目录和搜索只显示一篇笔记，并默认打开中文。搜索只查中文版本；英文译文用于进入阅读页后主动点击「English」切换，点击「中文」切回。尚无另一种语言时，点击「添加英文版」或「添加中文版」，在编辑器中填写译文并保存。当前语言的标题、正文和文章目录一起切换，编辑和下载针对当前语言。只有英文的已有单语言笔记仍按原样打开和搜索，补充中文版后再以中文作为默认入口和搜索内容。
+
+Agent 可以先完整读取源文，再调用 `create_language_version`，传入源文的 `uri`、最新 `version`、目标 `language`（`zh` 或 `en`）和译文 `content`。普通源文件默认按中文处理；原文是英文时加上 `source_language: "en"`。可用 `title` 指定译文标题。已有译文用 `read_document` 返回的语言 URI 和版本调用 `update_document`，不重复创建。整理整篇笔记时，建议同时传入读取结果中的 `note_version`，防止漏掉另一种语言的并发修改。完整流程见 `get_writing_guide({topic:"languages"})`。
+
+Coral 负责保存、关联和切换，不运行翻译模型，也不自动同步译文。两个文件通过稳定的 YAML 分组属性关联，普通 `.en.md` 文件不会被自动隐藏。移动、重命名或删除已关联的笔记时，两种语言一起处理；回收后也一起恢复。原有单语言笔记无需迁移，只有添加另一种语言时才建立关联。
 
 ## 文档格式
 
@@ -167,12 +179,14 @@ stdio 不需要先启动 Web。构建项目后，使用绝对路径启动，下�
 {
   "mcpServers": {
     "coral": {
-      "command": "node",
-      "args": ["/path/to/coral/sys/dist/stdio.js"]
+      "command": "/path/to/coral/sys/dist/coral",
+      "args": ["--stdio"]
     }
   }
 }
 ```
+
+Windows 将 `command` 改为实际的 `coral.exe` 绝对路径，JSON 中的反斜杠写成 `\\`。原有 HTTP MCP 地址保持不变；旧的 `node .../stdio.js` 配置需要改用可执行文件和 `--stdio`。
 
 ### Agent 如何获取使用说明
 
@@ -203,11 +217,11 @@ Agent 可以调用 `get_writing_guide({})` 获取完整指南，或用 `topic` �
 
 | 工具 | 参数 | 返回 |
 |---|---|---|
-| `get_writing_guide` | 可选 `topic`，默认 `all` | 写作规范、写入前 CI、调用流程、公式、链接规则、Mermaid/HTML 限制与完整示例 |
+| `get_writing_guide` | 可选 `topic`，默认 `all` | 写作规范、写入前 CI、中英文版本、调用流程、公式、链接规则、Mermaid/HTML 限制与完整示例 |
 | `list_vaults` | 无 | 仓库名称、简介、URI、状态、文档数量 |
-| `list_documents` | `vault_id`，可选 `directory/cursor/limit` | 文档 URI、相对路径、标题、版本和分页信息 |
-| `search_documents` | `query`，可选 `vault_id/cursor/limit` | 相关片段、行号、URI 和版本 |
-| `read_document` | `uri`，可选 `offset/max_chars/heading/version` | 原始 Markdown 分片、目录和分页信息 |
+| `list_documents` | `vault_id`，可选 `directory/cursor/limit` | 每篇笔记一个入口，含语言版本、相对路径、标题、版本和分页信息 |
+| `search_documents` | `query`，可选 `vault_id/cursor/limit` | 中文版本的相关片段、行号、URI 和版本；普通单语言笔记沿用现有内容 |
+| `read_document` | `uri`，可选 `offset/max_chars/heading/version` | 当前语言的 Markdown 分片、可用语言 URI、笔记版本、目录和分页信息 |
 | `download_document` | `uri` | 原始文件字节，以 Base64 blob 返回 |
 | `browse_directory` | `vault_id`，可选 `directory/cursor/limit` | 当前目录的文件夹和文档元信息，含目录版本、URI 和分页信息 |
 | `create_vault` | `name`，可选 `description` | 新知识库 ID、简介和 URI |
@@ -216,10 +230,11 @@ Agent 可以调用 `get_writing_guide({})` 获取完整指南，或用 `topic` �
 | `delete_directory` | `uri/version` | 将文件夹及其文档、附件移入回收站 |
 | `rename_directory` | `uri/name/version`，可选 `update_links` | 新路径、URI 和版本；启用引用维护时另含更新清单、未解决链接和操作编号 |
 | `create_document` | `vault_id/title`，可选 `content/directory/filename` | 新文档 URI、版本和元信息；`filename` 是不含 `.md` 的文件名 |
+| `create_language_version` | `uri/language/content/version`，可选 `source_language/title` | 新语言文件 URI、版本和笔记关联；目标语言存在时拒绝覆盖 |
 | `update_document` | `uri/content/version` | 更新后的文档 URI、版本和元信息 |
-| `delete_document` | `uri/version` | 将文档移入回收站 |
-| `rename_document` | `uri/name/version`，可选 `update_links` | 重命名文档文件，`name` 包含 Markdown 扩展名；可同时维护库内引用 |
-| `move_document` | `uri/directory/version`，可选 `update_links` | 移动到同库已有文件夹，`directory` 留空表示根目录；保留文件名，可同时维护引用 |
+| `delete_document` | `uri/version`，可选 `note_version` | 将笔记及已关联的语言文件一起移入回收站 |
+| `rename_document` | `uri/name/version`，可选 `update_links/note_version` | 重命名笔记及已关联的语言文件，`name` 是主文件的新名称，包含 Markdown 扩展名；可同时维护库内引用 |
+| `move_document` | `uri/directory/version`，可选 `update_links/note_version` | 将笔记及已关联的语言文件移动到同库已有文件夹，`directory` 留空表示根目录；保留文件名，可同时维护引用 |
 | `list_trash` | 可选 `vault_id` | 文件、文件夹和知识库的回收记录及版本 |
 | `restore_trash` | `vault_id/entry_id/version` | 恢复回收的文件或文件夹，拒绝同名覆盖 |
 | `restore_vault` | `vault_id/version` | 恢复回收的知识库或外部注册 |
@@ -281,7 +296,19 @@ npm run build
 npm start
 ```
 
-开发模式使用 `npm run dev`。浏览器资源在本地打包，不使用外部 CDN。全文索引保存在内存中，重启后自动重建；文档扫描会缓存没有变化的文件，内容仍以磁盘文件为准。Node.js 22 可能打印内置 SQLite 的实验性 API 提示。
+`npm run build` 检查浏览器代码、打包本地资源，再编译 `dist/coral.exe`（Windows）或 `dist/coral`（Linux/macOS）。`npm run dev` 会重新构建并启动；目前不提供自动重载。可以通过 `CORAL_GO` 指定 Go 编译器路径。
+
+HTTP、MCP、Markdown 解析、搜索、文件保护、语言版本和回收站都使用原生 Go 实现，没有 Node.js 服务端、JavaScript 解释器或模型进程。浏览器脚本负责编辑器、公式排版、剪贴板和交互图。搜索使用本地关键词匹配；磁盘文件仍是内容真源。
+
+构建后也可以直接运行程序：
+
+```powershell
+.\dist\coral.exe
+.\dist\coral.exe --stdio
+.\dist\coral.exe --config .\config.yaml
+```
+
+`--config` 要求指定文件存在。`--data-dir` 可以指定数据目录，`--listen 127.0.0.1:8300` 可以指定 HTTP 地址。源码仓库内默认读取 `sys/config.yaml`；单独分发的程序默认读取旁边的 `config.yaml`，没有配置时使用程序所在目录保存数据。原有 YAML 配置、Markdown 文件、语言关联和回收记录继续使用，不需要转换知识库。
 
 检查类型、运行测试和构建：
 
@@ -292,7 +319,7 @@ npm test
 npm run build
 ```
 
-测试覆盖文件安全、Obsidian 互操作、中文搜索、版本校验、回收站、网页操作及 HTTP/stdio MCP。浏览器测试先运行 `npx playwright install chromium`，再运行 `npm run test:browser`。
+`npm test` 会先构建当前代码，再运行 Go 测试、浏览器状态测试、Web/MCP 对照测试，以及 `tests/reference/` 中冻结的迁移前回归用例。对照实现仅用于测试，不进入可执行文件。原有浏览器流程直接测试 Go 程序，使用临时知识库，不访问正在运行的用户服务。先运行 `npx playwright install chromium`，再运行 `npm run test:browser`；也可通过 `CORAL_BROWSER_EXECUTABLE` 指定本机 Chrome。
 
 ## License
 

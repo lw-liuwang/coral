@@ -6,10 +6,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
-import { createConfig } from '../src/config.js';
-import { AppError, headings, parseMarkdown, parseUri, resourceUri, serialize } from '../src/content.js';
-import { backlinksFor, renderMarkdown, resolveLink, resolveRelativeLink, wikiTargets } from '../src/markdown.js';
-import { MAX_FILE_BYTES, VaultRegistry } from '../src/vault.js';
+import { createConfig } from './src/config.js';
+import { AppError, headings, parseMarkdown, parseUri, resourceUri, serialize } from './src/content.js';
+import { backlinksFor, renderMarkdown, resolveLink, resolveRelativeLink, wikiTargets } from './src/markdown.js';
+import { MAX_FILE_BYTES, VaultRegistry } from './src/vault.js';
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { while (cleanup.length) cleanup.pop()!(); });

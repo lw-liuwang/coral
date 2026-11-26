@@ -10,6 +10,23 @@ export function mountReading() {
     const uri = article.dataset.readingDocument!;
     const positionKey = 'coral:reading-position:' + uri;
     const updateError = document.querySelector<HTMLElement>('[data-document-update-error]');
+    const topbar = document.querySelector<HTMLElement>('.topbar');
+    const updateHeadingOffset = () => {
+      if (topbar) document.documentElement.style.setProperty('--reading-heading-offset', Math.ceil(topbar.getBoundingClientRect().height + 16) + 'px');
+    };
+    updateHeadingOffset();
+    if (topbar) new ResizeObserver(updateHeadingOffset).observe(topbar);
+    const headings = Array.from(article.querySelectorAll<HTMLElement>('h1[id], h2[id], h3[id], h4[id], h5[id], h6[id]'));
+    const toc = document.querySelector<HTMLElement>('[data-article-toc]');
+    const tocScroll = toc?.querySelector<HTMLElement>('.article-toc-scroll') ?? toc;
+    const tocLinks = Array.from(toc?.querySelectorAll<HTMLAnchorElement>('a[href^="#"]') ?? []);
+    const tocEntries = headings.flatMap(heading => {
+      const link = tocLinks.find(link => {
+        try { return decodeURIComponent(link.hash.slice(1)) === heading.id; }
+        catch { return false; }
+      });
+      return link ? [{ heading, link }] : [];
+    });
     const url = new URL(location.href);
     const start = url.searchParams.get('reading') === 'start';
     if (start) {
@@ -30,13 +47,27 @@ export function mountReading() {
           heading: 'heading' in value && typeof value.heading === 'string' ? value.heading : undefined };
       }
     } catch { /* Position storage is optional. */ }
-    const savePosition = () => {
-      if (restoring || reloading) return;
-      const line = Math.max(0, document.querySelector('.topbar')?.getBoundingClientRect().bottom ?? 0) + 16;
-      const headings = Array.from(article.querySelectorAll<HTMLElement>('h1[id], h2[id], h3[id], h4[id], h5[id], h6[id]'));
+    const readPosition = (): ReadingPosition => {
+      const line = Math.ceil(Math.max(0, topbar?.getBoundingClientRect().bottom ?? 0) + 16) + 1;
       const heading = headings.filter(item => item.getBoundingClientRect().top <= line).at(-1);
-      const y = window.scrollY;
-      const position: ReadingPosition = { y, offset: heading ? -heading.getBoundingClientRect().top : 0, heading: heading?.id };
+      return { y: window.scrollY, offset: heading ? -heading.getBoundingClientRect().top : 0, heading: heading?.id };
+    };
+    const updateToc = (position = readPosition()) => {
+      if (!tocScroll || !tocEntries.length) return;
+      const bottom = document.documentElement.scrollHeight - innerHeight;
+      const current = bottom > 0 && window.scrollY >= bottom - 1 ? tocEntries.at(-1)!
+        : tocEntries.find(entry => entry.heading.id === position.heading) ?? tocEntries[0];
+      tocLinks.forEach(link => {
+        if (link === current.link) link.setAttribute('aria-current', 'location');
+        else link.removeAttribute('aria-current');
+      });
+      if (!tocScroll.clientHeight) return;
+      const bounds = tocScroll.getBoundingClientRect(), item = current.link.getBoundingClientRect();
+      const top = bounds.top + tocScroll.clientTop, bottomEdge = top + tocScroll.clientHeight;
+      if (item.top < top || item.bottom > bottomEdge) tocScroll.scrollTop += (item.top + item.bottom - top - bottomEdge) / 2;
+    };
+    const savePosition = (position = readPosition()) => {
+      if (restoring || reloading) return;
       try { localStorage.setItem(positionKey, JSON.stringify(position)); } catch { /* Reading works without storage. */ }
     };
     const restorePosition = () => {
@@ -45,28 +76,40 @@ export function mountReading() {
         const y = start ? 0 : heading && article.contains(heading) ? window.scrollY + heading.getBoundingClientRect().top + saved!.offset : saved?.y;
         if (y !== undefined) window.scrollTo({ top: Math.max(0, y), behavior: 'instant' });
       }
-      requestAnimationFrame(() => { restoring = false; });
+      requestAnimationFrame(() => { restoring = false; updateToc(); });
     };
     requestAnimationFrame(restorePosition);
-    window.addEventListener('scroll', () => {
-      if (pending || restoring) return;
+    const schedulePosition = () => {
+      if (pending) return;
       pending = true;
-      requestAnimationFrame(() => { pending = false; savePosition(); });
-    }, { passive: true });
-    window.addEventListener('pagehide', savePosition);
+      requestAnimationFrame(() => {
+        pending = false;
+        if (restoring) return;
+        const position = readPosition();
+        updateToc(position);
+        savePosition(position);
+      });
+    };
+    window.addEventListener('scroll', schedulePosition, { passive: true });
+    window.addEventListener('hashchange', schedulePosition);
+    window.addEventListener('popstate', schedulePosition);
+    window.addEventListener('resize', schedulePosition);
+    toc?.closest('details')?.addEventListener('toggle', schedulePosition);
+    window.addEventListener('pagehide', () => savePosition());
     const checkVersion = async () => {
       if (checking || reloading || document.hidden || !article.dataset.readingVersion) return;
       checking = true;
       let errorMessage = '无法检查笔记更新，请重试。';
       try {
         const response = await fetch('/api/document?' + new URLSearchParams({ uri, max_chars: '1' }), { cache: 'no-store', headers: { Accept: 'application/json' } });
-        const latest = await response.json() as { version?: string; error?: string };
+        const latest = await response.json() as { version?: string; note_version?: string; error?: string };
         if (!response.ok) {
           if (typeof latest.error === 'string') errorMessage = latest.error;
           throw new Error(errorMessage);
         }
         if (updateError) updateError.hidden = true;
-        if (latest.version && latest.version !== article.dataset.readingVersion) {
+        if (latest.version && latest.version !== article.dataset.readingVersion
+          || latest.note_version && article.dataset.readingNoteVersion && latest.note_version !== article.dataset.readingNoteVersion) {
           savePosition();
           reloading = true;
           location.reload();
@@ -79,7 +122,7 @@ export function mountReading() {
       } finally { checking = false; }
     };
     window.addEventListener('focus', () => { void checkVersion(); });
-    window.addEventListener('pageshow', () => { void checkVersion(); });
+    window.addEventListener('pageshow', () => { schedulePosition(); void checkVersion(); });
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) savePosition();
       else void checkVersion();
@@ -88,7 +131,7 @@ export function mountReading() {
 
   const remember = () => {
     if (!article) return;
-    try { localStorage.setItem(readingKey(article.dataset.readingDirectory!), article.dataset.readingDocument!); }
+    try { localStorage.setItem(readingKey(article.dataset.readingDirectory!), article.dataset.readingNote ?? article.dataset.readingDocument!); }
     catch { /* Reading navigation also works when browser storage is unavailable. */ }
   };
   const refresh = () => {

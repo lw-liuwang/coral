@@ -5,9 +5,9 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { createConfig } from '../src/config.js';
-import { resourceUri } from '../src/content.js';
-import { createApp } from '../src/web.js';
+import { createConfig } from './src/config.js';
+import { resourceUri } from './src/content.js';
+import { createApp } from './src/web.js';
 
 async function fixture(t: TestContext) {
   const root = mkdtempSync(join(tmpdir(), 'coral-search-'));

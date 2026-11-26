@@ -23,6 +23,7 @@ a:hover { text-decoration: underline; }
 
 /* 知识库导航与内容 */
 .app-shell { display: grid; grid-template-columns: 208px minmax(0, 1fr); }
+.app-shell.has-article-outline { grid-template-columns: 208px 224px minmax(0, 1fr); }
 .sidebar { display: flex; flex-direction: column; gap: 0.7rem; position: sticky; top: 0; height: 100dvh; padding: 1.15rem 0.65rem 0.65rem; background: #f7f7f8; border-right: 1px solid var(--border); min-width: 0; }
 .brand { padding: 0.2rem 0.6rem; font-weight: 600; font-size: 1.1rem; color: var(--fg); letter-spacing: -0.03em; }
 .brand:hover { text-decoration: none; }
@@ -46,6 +47,18 @@ a:hover { text-decoration: underline; }
 .sidebar > .tools-menu > summary span { overflow: hidden; text-overflow: ellipsis; }
 .sidebar > .tools-menu .menu-content { left: 0; right: 0; min-width: 0; max-height: 50dvh; overflow-y: auto; }
 .sidebar-trash { margin-top: auto; }
+.reading-outline { position: sticky; top: 0; align-self: start; height: 100dvh; min-width: 0; padding: 1.25rem 0.65rem; border-right: 1px solid var(--border); }
+.article-outline { min-height: 0; }
+.article-outline > summary { padding: 0.35rem 0.55rem; color: var(--muted); font-size: 0.82rem; cursor: pointer; }
+.article-toc-scroll { max-height: calc(100dvh - 5rem); overflow-y: auto; scrollbar-width: thin; }
+.article-toc-scroll ol { list-style: none; margin: 0.25rem 0; padding: 0; }
+.article-toc-scroll a { display: block; padding: 0.35rem 0.55rem; border-radius: 5px; color: #555b65; font-size: 0.82rem; line-height: 1.5; overflow-wrap: anywhere; }
+.article-toc-scroll a:hover { background: #ededef; text-decoration: none; }
+.article-toc-scroll a[aria-current] { background: #e7e7eb; color: var(--fg); font-weight: 550; }
+.article-toc-scroll .toc-depth-1 a { padding-left: 1.2rem; }
+.article-toc-scroll .toc-depth-2 a { padding-left: 1.85rem; }
+.article-toc-scroll .toc-depth-3 a { padding-left: 2.5rem; }
+.article-toc-scroll .toc-depth-4 a, .article-toc-scroll .toc-depth-5 a { padding-left: 3.15rem; }
 .workspace { min-width: 0; }
 .topbar { position: sticky; top: 0; z-index: 10; min-height: 70px; padding: 0.85rem 1.6rem; background: var(--card); border-bottom: 1px solid var(--border); }
 .page-content { padding: 1.6rem 1.6rem 4rem; }
@@ -105,7 +118,7 @@ form.inline { display: inline; }
 .md-body > p.paragraph-indent { text-indent: 2em; }
 .md-body h1, .md-body h2, .md-body h3,
 .md-body h4, .md-body h5, .md-body h6 {
-  line-height: 1.45; font-weight: 650; scroll-margin-top: 6rem;
+  line-height: 1.45; font-weight: 650; scroll-margin-top: var(--reading-heading-offset, 6rem);
   margin-bottom: 0.8em;
 }
 .md-body h1 { font-size: 34px; margin-top: 2em; }
@@ -300,6 +313,7 @@ mark { background: #f7e2a8; padding: 0 0.1em; border-radius: 3px; }
 .writing-page .page-content { padding-top: 1rem; }
 .writing-page .page-head h1 { font-size: 1.25rem; }
 .document-fields { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 1rem; margin: 0 0 1rem; }
+.language-fields { grid-template-columns: minmax(0, 2fr) repeat(2, minmax(0, 1fr)); }
 .file-list .page-link, .file-list li > a { display: inline-flex; align-items: center; gap: 0.5rem; min-width: 0; overflow-wrap: anywhere; }
 .file-list li { align-items: center; flex-wrap: nowrap; }
 .file-entry { display: flex; flex: 1; align-items: center; flex-wrap: wrap; gap: 0.4rem 1rem; min-width: 0; overflow-wrap: anywhere; }
@@ -346,10 +360,12 @@ mark { background: #f7e2a8; padding: 0 0.1em; border-radius: 3px; }
 .editor-focused .writing-surface .editor-grid { height: calc(100dvh - 190px); }
 .editor-focused .document-fields { display: none; }
 @media (max-width: 800px) {
-  .app-shell { grid-template-columns: minmax(0, 1fr); }
+  .app-shell, .app-shell.has-article-outline { grid-template-columns: minmax(0, 1fr); }
   .sidebar { position: static; height: auto; max-height: 240px; gap: 0.6rem; }
   .sidebar-nav { flex-direction: row; flex-wrap: wrap; overflow-y: auto; }
   .sidebar-trash { margin: 0; }
+  .reading-outline { position: static; height: auto; padding: 0.6rem 1rem; border-right: 0; border-bottom: 1px solid var(--border); }
+  .article-toc-scroll { max-height: 100px; }
   .topbar { padding: 1rem; }
   .page-content { padding: 1.2rem 1rem 3rem; }
   .md-body h1 { font-size: 25px; }

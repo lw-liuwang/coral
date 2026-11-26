@@ -1,8 +1,8 @@
 import { parseUri, resourceUri, safeParts, type AppError } from './content.js';
 import { createHash, randomBytes } from 'node:crypto';
-import { backlinksFor, editUrl, renderMarkdown, resolveLink, viewUrl, wikiTargets } from './markdown.js';
+import { backlinksFor, editUrl, renderMarkdownWithOutline, resolveLink, viewUrl, wikiTargets, type RenderedHeading } from './markdown.js';
 import { stringify } from 'yaml';
-import { isIndexDocument, type Document, type RelocationReport, type VaultRegistry } from './vault.js';
+import { isIndexDocument, type Document, type DocumentLanguage, type RelocationReport, type VaultRegistry } from './vault.js';
 import { searchReturn, withSearchReturn } from './web-context.js';
 import { searchMatchRanges, splitSearchQuery } from './search-query.js';
 
@@ -57,6 +57,17 @@ interface PageOptions {
   header: string;
   documentCount?: number;
   searchScope?: boolean;
+  outline?: RenderedHeading[];
+}
+
+function articleOutline(headings: RenderedHeading[]) {
+  const levels: number[] = [];
+  return `<details class="article-outline" open><summary>文章目录</summary><nav class="article-toc-scroll" data-article-toc aria-label="文章目录"><ol>${headings.map(heading => {
+    while (levels.length && levels.at(-1)! >= heading.level) levels.pop();
+    const depth = levels.length;
+    levels.push(heading.level);
+    return `<li class="toc-depth-${depth}"><a href="#${escape(encodeURIComponent(heading.id))}">${escape(heading.title)}</a></li>`;
+  }).join('')}</ol></nav></details>`;
 }
 
 function folderNavigation(registry: VaultRegistry, vaultId: string, directory: string) {
@@ -104,9 +115,10 @@ function layout(registry: VaultRegistry, title: string, content: string, options
     ${actionMenu('切换知识库', vaultLinks, registry.vaults.get(vaultId ?? '')?.name ?? '知识库', 'library')}
     <div class="sidebar-scroll">${vaultId && options.directory !== undefined ? folderNavigation(registry, vaultId, options.directory) : ''}</div>
     <a class="sidebar-trash" href="${escape('/trash' + (vaultId ? '?' + new URLSearchParams({ vault: vaultId }) : ''))}">${icon('trash-2')}回收站</a></aside>`;
+  const outline = options.outline?.length ? `<aside class="reading-outline" aria-label="文章导航">${articleOutline(options.outline)}</aside>` : '';
   const header = directoryPage ? `<div class="page-head">${breadcrumbs}${options.header}</div>` : breadcrumbs + options.header;
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="editor-style-nonce" content="${editorStyleNonce}"><title>${escape(title)} · coral</title><link rel="stylesheet" href="/static/coral.css"><link rel="stylesheet" href="/static/highlight.css"><link rel="stylesheet" href="/static/katex/katex.min.css"></head>
-    <body class="app-shell">${sidebar}<main class="workspace"><header class="topbar${directoryPage ? ' directory-header' : ''}">${header}</header><div class="page-content">${content}</div></main><script src="/static/client.js" defer></script></body></html>`;
+    <body class="app-shell${outline ? ' has-article-outline' : ''}">${sidebar}${outline}<main class="workspace"><header class="topbar${directoryPage ? ' directory-header' : ''}">${header}</header><div class="page-content">${content}</div></main><script src="/static/client.js" defer></script></body></html>`;
 }
 
 export function vaultCatalog(registry: VaultRegistry, trashed = false) {
@@ -141,12 +153,13 @@ export function home(registry: VaultRegistry, vaultId: string, options: { upload
   const documentCount = directory ? scan.documents.length : scan.total;
   const location = (path: string) => '/?' + new URLSearchParams({ vault: vaultId, directory: path });
   const parts = safeParts(directory, true);
-  const remove = (action: string, uri: string, version: string, message: string, label: string) => `<form class="row-delete" action="${action}" method="post" data-confirm="${escape(message)}"><input type="hidden" name="uri" value="${escape(uri)}"><input type="hidden" name="version" value="${escape(version)}"><button type="submit" class="btn danger" title="${escape(label)}" aria-label="${escape(label)}">${icon('trash-2')}<span>删除</span></button></form>`;
+  const remove = (action: string, uri: string, version: string, message: string, label: string, noteVersion?: string) => `<form class="row-delete" action="${action}" method="post" data-confirm="${escape(message)}"><input type="hidden" name="uri" value="${escape(uri)}"><input type="hidden" name="version" value="${escape(version)}">${noteVersion ? `<input type="hidden" name="note_version" value="${escape(noteVersion)}">` : ''}<button type="submit" class="btn danger" title="${escape(label)}" aria-label="${escape(label)}">${icon('trash-2')}<span>删除</span></button></form>`;
   const documentRow = (doc: Document) => {
+    const bilingual = (doc.languageVersions?.length ?? 1) > 1;
     const filename = doc.relative.split('/').at(-1)!;
     const filenameLabel = filename.replace(/\.(md|markdown)$/i, '') === doc.title ? '' : `<span class="muted">${escape(filename)}</span>`;
     const actions = copyButton(doc.uri, `复制文档 URI：${doc.title}`) + renameLink(doc.uri, `重命名文档：${doc.title}`)
-      + moveLink(doc.uri, `移动文档：${doc.title}`) + remove('/delete', doc.uri, doc.version, `将文档「${doc.relative}」移入知识库回收站？`, `删除文档：${doc.title}`);
+      + moveLink(doc.uri, `移动文档：${doc.title}`) + remove('/delete', doc.uri, doc.version, bilingual ? `将笔记「${doc.relative}」的全部语言版本移入知识库回收站？` : `将文档「${doc.relative}」移入知识库回收站？`, `删除文档：${doc.title}`, doc.noteVersion);
     return `<li id="${documentAnchor(doc.uri)}" data-document-uri="${escape(doc.uri)}"><div class="file-entry"><a class="page-link" href="${escape(viewUrl(doc.uri))}">${icon('file-text')}${escape(doc.title)}</a><span class="reading-marker" hidden>上次阅读</span>${filenameLabel}</div><span class="muted file-updated">${escape(doc.metadata.updated)}</span><div class="row-actions">${actionMenu(`文档操作：${doc.title}`, actions)}</div></li>`;
   };
   const importForm = `<form class="kb-upload" action="/upload" method="post" enctype="multipart/form-data"><input type="hidden" name="vault" value="${escape(vaultId)}"><input type="hidden" name="directory" value="${escape(directory)}"><input type="file" name="files" accept=".md,.markdown" multiple required aria-label="Markdown 文档"><button class="btn" type="submit">${icon('upload')}上传 Markdown</button></form>`;
@@ -180,23 +193,40 @@ export function newPage(registry: VaultRegistry, vaultId: string, fields: { titl
     <input type="hidden" id="preview-vault" value="${escape(vaultId)}">${writingSurface(fields.content ?? '', '正文')}</form>`, { vaultId, directory, header });
 }
 
-export function renamePage(registry: VaultRegistry, entry: ReturnType<VaultRegistry['renameEntry']>, fields: { name?: string; version?: string; error?: string; from?: string; returnTo?: string; details?: AppError['details'] } = {}) {
+export function newLanguagePage(registry: VaultRegistry, doc: Document, language: DocumentLanguage, fields: { title?: string; content?: string; version?: string; sourceLanguage?: DocumentLanguage; error?: string; returnTo?: string; conflict?: boolean } = {}) {
+  const note = registry.noteLanguages(doc.uri);
+  const sourceLanguage = fields.sourceLanguage ?? note.versions.find(item => item.document.uri === doc.uri)!.language;
+  const returnTo = searchReturn(fields.returnTo);
+  const directory = note.primary.relative.split('/').slice(0, -1).join('/');
+  const backUrl = withSearchReturn(viewUrl(doc.uri), returnTo);
+  const languageOptions = (selected: DocumentLanguage) => `<option value="zh"${selected === 'zh' ? ' selected' : ''}>中文</option><option value="en"${selected === 'en' ? ' selected' : ''}>English</option>`;
+  const header = `<div class="page-head"><h1>添加语言版本</h1><div class="btns">${linkButton(backUrl, '返回阅读', 'arrow-left')}<button class="btn primary" form="language-form" type="submit">${icon('save')}保存版本</button></div></div>`;
+  const languageFields = note.grouped ? `<input type="hidden" name="source_language" value="${sourceLanguage}"><input type="hidden" name="language" value="${language}">`
+    : `<label>原文语言<select name="source_language">${languageOptions(sourceLanguage)}</select></label><label>新增语言<select name="language">${languageOptions(language)}</select></label>`;
+  return layout(registry, '添加语言版本', `${alert(fields.error)}<form id="language-form" class="writing-form" action="/languages/new" method="post"><input type="hidden" name="return_to" value="${escape(returnTo)}"><input type="hidden" name="uri" value="${escape(doc.uri)}"><input type="hidden" name="version" value="${escape(fields.version ?? doc.version)}"><input type="hidden" id="preview-vault" value="${escape(doc.vaultId)}"><input type="hidden" id="preview-context-uri" value="${escape(doc.uri)}"><div class="document-fields language-fields"><label>标题<input name="title" value="${escape(fields.title ?? doc.title)}" required maxlength="200"></label>${languageFields}</div>${writingSurface(fields.content ?? '', '新版本正文')}<div id="conflict-actions" class="btns"${fields.conflict ? '' : ' hidden'}><a class="btn" data-latest-document href="${escape(backUrl)}" target="_blank" rel="noopener">查看最新版本</a><button class="btn" type="button" data-download-draft hidden>下载我的草稿</button></div></form>`, { vaultId: doc.vaultId, directory, filename: note.primary.relative.split('/').at(-1), header, query: returnTo ? new URL(returnTo, 'http://coral.local').searchParams.get('q') ?? '' : '' });
+}
+
+export function renamePage(registry: VaultRegistry, entry: ReturnType<VaultRegistry['renameEntry']>, fields: { name?: string; version?: string; noteVersion?: string; error?: string; from?: string; returnTo?: string; details?: AppError['details'] } = {}) {
   const directory = entry.relative.split('/').slice(0, -1).join('/');
+  const note = entry.kind === 'document' ? registry.noteLanguages(entry.uri) : undefined;
+  const noteVersion = fields.noteVersion ?? (note?.grouped ? note.signature : undefined);
   const backUrl = fields.from === 'document' && entry.kind === 'document' ? withSearchReturn(viewUrl(entry.uri), fields.returnTo)
     : directoryUrl(entry.vaultId, fields.from === 'directory' && entry.kind === 'directory' ? entry.relative : directory);
   const header = `<div class="page-head"><h1>重命名${entry.kind === 'directory' ? '文件夹' : '文件'}</h1><div class="btns">${linkButton(backUrl, '取消', 'arrow-left')}${copyButton(entry.uri)}</div></div>`;
   return layout(registry, '重命名', `${alert(fields.error)}${recoveryNotice(registry, fields.details)}
-    <form class="form" action="/rename" method="post"><input type="hidden" name="return_to" value="${escape(searchReturn(fields.returnTo))}"><input type="hidden" name="uri" value="${escape(entry.uri)}"><input type="hidden" name="version" value="${escape(fields.version ?? entry.version)}"><input type="hidden" name="from" value="${escape(fields.from)}"><label>${entry.kind === 'directory' ? '文件夹名称' : '文件名称（含扩展名）'}<input name="name" required maxlength="255" value="${escape(fields.name ?? entry.name)}" autofocus></label><button class="btn primary" type="submit">${icon('save')}保存名称</button></form>`, { vaultId: entry.vaultId, directory, filename: entry.name, header });
+    <form class="form" action="/rename" method="post"><input type="hidden" name="return_to" value="${escape(searchReturn(fields.returnTo))}"><input type="hidden" name="uri" value="${escape(entry.uri)}"><input type="hidden" name="version" value="${escape(fields.version ?? entry.version)}">${noteVersion ? `<input type="hidden" name="note_version" value="${escape(noteVersion)}">` : ''}<input type="hidden" name="from" value="${escape(fields.from)}"><label>${entry.kind === 'directory' ? '文件夹名称' : '文件名称（含扩展名）'}<input name="name" required maxlength="255" value="${escape(fields.name ?? entry.name)}" autofocus></label><button class="btn primary" type="submit">${icon('save')}保存名称</button></form>`, { vaultId: entry.vaultId, directory, filename: entry.name, header });
 }
 
-export function movePage(registry: VaultRegistry, doc: Document, fields: { directory?: string; version?: string; error?: string; from?: string; returnTo?: string; details?: AppError['details'] } = {}) {
+export function movePage(registry: VaultRegistry, doc: Document, fields: { directory?: string; version?: string; noteVersion?: string; error?: string; from?: string; returnTo?: string; details?: AppError['details'] } = {}) {
   const directory = doc.relative.split('/').slice(0, -1).join('/');
+  const note = registry.noteLanguages(doc.uri);
+  const noteVersion = fields.noteVersion ?? (note.grouped ? note.signature : undefined);
   const selected = fields.directory ?? directory;
   const directories = registry.listDirectories(doc.vaultId);
   const backUrl = fields.from === 'document' ? withSearchReturn(viewUrl(doc.uri), fields.returnTo) : directoryUrl(doc.vaultId, directory);
   const header = `<div class="page-head"><h1>移动笔记</h1>${linkButton(backUrl, '取消', 'arrow-left')}</div>`;
   return layout(registry, '移动笔记', `${alert(fields.error)}${recoveryNotice(registry, fields.details)}
-    <form class="form" action="/move" method="post"><input type="hidden" name="return_to" value="${escape(searchReturn(fields.returnTo))}"><input type="hidden" name="uri" value="${escape(doc.uri)}"><input type="hidden" name="version" value="${escape(fields.version ?? doc.version)}"><input type="hidden" name="from" value="${escape(fields.from)}"><label>目标文件夹<select name="directory">${directories.includes(selected) ? '' : `<option value="${escape(selected)}" selected>${escape(selected || '知识库根目录')}（不可用）</option>`}${directories.map(path => `<option value="${escape(path)}"${path === selected ? ' selected' : ''}>${escape(path || '知识库根目录')}</option>`).join('')}</select></label><button class="btn primary" type="submit">${icon('folder-input')}确认移动</button></form>`, { vaultId: doc.vaultId, directory, filename: doc.relative.split('/').at(-1), header });
+    <form class="form" action="/move" method="post"><input type="hidden" name="return_to" value="${escape(searchReturn(fields.returnTo))}"><input type="hidden" name="uri" value="${escape(doc.uri)}"><input type="hidden" name="version" value="${escape(fields.version ?? doc.version)}">${noteVersion ? `<input type="hidden" name="note_version" value="${escape(noteVersion)}">` : ''}<input type="hidden" name="from" value="${escape(fields.from)}"><label>目标文件夹<select name="directory">${directories.includes(selected) ? '' : `<option value="${escape(selected)}" selected>${escape(selected || '知识库根目录')}（不可用）</option>`}${directories.map(path => `<option value="${escape(path)}"${path === selected ? ' selected' : ''}>${escape(path || '知识库根目录')}</option>`).join('')}</select></label><button class="btn primary" type="submit">${icon('folder-input')}确认移动</button></form>`, { vaultId: doc.vaultId, directory, filename: doc.relative.split('/').at(-1), header });
 }
 
 function writingSurface(content: string, label: string) {
@@ -210,27 +240,47 @@ function writingSurface(content: string, label: string) {
 
 export function documentPage(registry: VaultRegistry, doc: Document, options: { returnTo?: string; operation?: RelocationReport } = {}) {
   const returnTo = searchReturn(options.returnTo);
-  const directory = doc.relative.split('/').slice(0, -1).join('/');
+  const note = registry.noteLanguages(doc.uri);
+  doc = note.current;
+  const currentLanguage = note.versions.find(item => item.document.uri === doc.uri)!.language;
+  const otherLanguage = currentLanguage === 'zh' ? 'en' : 'zh';
+  const otherVersion = note.versions.find(item => item.language === otherLanguage)?.document;
+  const languageLink = otherVersion ? `<a class="btn" href="${escape(withSearchReturn(viewUrl(otherVersion.uri), returnTo))}" aria-label="切换到${otherLanguage === 'en' ? '英文' : '中文'}"><span lang="${otherLanguage}">${otherLanguage === 'en' ? 'English' : '中文'}</span></a>`
+    : `<a class="btn" href="${escape(withSearchReturn('/languages/new?' + new URLSearchParams({ uri: doc.uri, language: otherLanguage }), returnTo))}">添加${otherLanguage === 'en' ? '英文版' : '中文版'}</a>`;
+  const directory = note.primary.relative.split('/').slice(0, -1).join('/');
   const documents = registry.scan(doc.vaultId).documents;
-  const returnUrl = directoryUrl(doc.vaultId, directory) + '#' + documentAnchor(doc.uri);
-  const siblings = documents.filter(other => other.relative.split('/').slice(0, -1).join('/') === directory);
-  const index = siblings.findIndex(other => other.uri === doc.uri);
+  const notes = registry.notes(doc.vaultId);
+  const returnUrl = directoryUrl(doc.vaultId, directory) + '#' + documentAnchor(note.primary.uri);
+  const siblings = notes.filter(other => other.relative.split('/').slice(0, -1).join('/') === directory);
+  const index = siblings.findIndex(other => other.uri === note.primary.uri);
   const neighbor = (other: Document | undefined, next: boolean) => {
     const label = next ? '下一篇' : '上一篇';
     return other ? `<a class="reading-neighbor${next ? ' reading-next' : ''}" rel="${next ? 'next' : 'prev'}" href="${escape(withSearchReturn(viewUrl(other.uri) + '&reading=start', returnTo))}"><span class="reading-direction">${icon(next ? 'chevron-right' : 'chevron-left')}${label}</span><span class="reading-title">${escape(other.title)}</span></a>`
       : `<div class="reading-boundary${next ? ' reading-next' : ''}"><span class="reading-direction">${label}</span><span class="reading-title">${next ? '已是本目录最后一篇' : '这是本目录第一篇'}</span></div>`;
   };
   const readingNav = index < 0 ? '' : `<nav class="reading-nav reading-nav-bottom" aria-label="文末阅读导航">${neighbor(siblings[index - 1], false)}<div class="reading-position"><span>第 ${index + 1} / ${siblings.length} 篇</span><a href="${escape(returnUrl)}">返回目录</a></div>${neighbor(siblings[index + 1], true)}</nav>`;
-  const backlinks = backlinksFor(documents, doc.uri);
-  const properties = Object.entries(doc.metadata).filter(([key]) => key !== 'title');
+  const primaryByUri = new Map<string, Document>();
+  for (const other of notes) {
+    primaryByUri.set(other.uri, other);
+    for (const version of other.languageVersions ?? []) primaryByUri.set(version.uri, other);
+  }
+  const backlinkNotes = new Map<string, Document>();
+  for (const version of note.versions) for (const other of backlinksFor(documents, version.document.uri)) {
+    const primary = primaryByUri.get(other.uri) ?? other;
+    if (primary.uri !== note.primary.uri) backlinkNotes.set(primary.uri, primary);
+  }
+  const backlinks = [...backlinkNotes.values()];
+  const properties = Object.entries(doc.metadata).filter(([key]) => !['title', 'coral_note_id', 'coral_language', 'coral_primary'].includes(key));
   let titleAnchor = '';
-  const renderedBody = renderMarkdown(doc.body, documents, doc, editorStyleNonce).replace(/^\s*<h1\b([^>]*)>[\s\S]*?<\/h1>\s*/, (_, attributes: string) => {
+  const rendered = renderMarkdownWithOutline(doc.body, documents, doc, editorStyleNonce);
+  const renderedBody = rendered.html.replace(/^\s*<h1\b([^>]*)>[\s\S]*?<\/h1>\s*/, (_, attributes: string) => {
     titleAnchor = attributes.match(/\sid="[^"]*"/)?.[0] ?? '';
+    rendered.headings.shift();
     return '';
   });
-  const header = `<div class="page-head"><h1${titleAnchor}>${escape(doc.title)}</h1><div class="btns">${returnTo ? linkButton(returnTo, '返回搜索', 'arrow-left') : ''}${linkButton(returnUrl, '所在目录', 'folder')}${linkButton(withSearchReturn(editUrl(doc.uri), returnTo), '编辑', 'pencil', true)}${actionMenu('文档操作', copyButton(doc.uri) + renameLink(doc.uri, '重命名', 'document', returnTo) + moveLink(doc.uri, '移动', 'document', returnTo) + linkButton('/download?uri=' + encodeURIComponent(doc.uri), '下载', 'download') + `<form class="inline" action="/delete" method="post" data-confirm="将这个文档移入知识库回收站？"><input type="hidden" name="uri" value="${escape(doc.uri)}"><input type="hidden" name="version" value="${doc.version}"><button class="btn danger" title="删除" aria-label="删除">${icon('trash-2')}<span>删除</span></button></form>`)}</div></div>`;
-  return layout(registry, doc.title, `${operationNotice(options.operation)}${alert(doc.warning)}
-    <div class="alert" role="alert" data-document-update-error hidden></div><article class="md-body" data-reading-version="${doc.version}" data-reading-document="${escape(doc.uri)}" data-reading-directory="${escape(resourceUri(doc.vaultId, directory))}">${renderedBody}</article>${readingNav}${backlinks.length ? `<section class="backlinks"><h2>反向链接 <span class="muted">${backlinks.length}</span></h2><ul>${backlinks.map(other => `<li><a href="${escape(viewUrl(other.uri))}">${escape(other.title)}</a></li>`).join('')}</ul></section>` : ''}${properties.length ? `<details class="meta"><summary>文档属性</summary><dl>${properties.map(([key, value]) => `<dt>${escape(key)}</dt><dd>${escape(typeof value === 'object' ? stringify(value).trimEnd() : value)}</dd>`).join('')}</dl></details>` : ''}`, { vaultId: doc.vaultId, directory, filename: doc.relative.split('/').at(-1), header, query: returnTo ? new URL(returnTo, 'http://coral.local').searchParams.get('q') ?? '' : '' });
+  const header = `<div class="page-head"><h1${titleAnchor}>${escape(doc.title)}</h1><div class="btns">${returnTo ? linkButton(returnTo, '返回搜索', 'arrow-left') : ''}${languageLink}${linkButton(returnUrl, '所在目录', 'folder')}${linkButton(withSearchReturn(editUrl(doc.uri), returnTo), '编辑', 'pencil', true)}${actionMenu('文档操作', copyButton(doc.uri) + renameLink(note.primary.uri, '重命名', 'document', returnTo) + moveLink(note.primary.uri, '移动', 'document', returnTo) + linkButton('/download?uri=' + encodeURIComponent(doc.uri), '下载', 'download') + `<form class="inline" action="/delete" method="post" data-confirm="${note.grouped ? '将这篇笔记的全部语言版本移入知识库回收站？' : '将这个文档移入知识库回收站？'}"><input type="hidden" name="uri" value="${escape(note.primary.uri)}"><input type="hidden" name="version" value="${note.primary.version}">${note.grouped ? `<input type="hidden" name="note_version" value="${note.signature}">` : ''}<button class="btn danger" title="删除" aria-label="删除">${icon('trash-2')}<span>删除</span></button></form>`)}</div></div>`;
+  return layout(registry, doc.title, `${operationNotice(options.operation)}${alert(doc.warning ?? note.issue)}
+    <div class="alert" role="alert" data-document-update-error hidden></div><article class="md-body" lang="${currentLanguage}" data-reading-version="${doc.version}" data-reading-note-version="${note.signature}" data-reading-note="${escape(note.primary.uri)}" data-reading-document="${escape(doc.uri)}" data-reading-directory="${escape(resourceUri(doc.vaultId, directory))}">${renderedBody}</article>${readingNav}${backlinks.length ? `<section class="backlinks"><h2>反向链接 <span class="muted">${backlinks.length}</span></h2><ul>${backlinks.map(other => `<li><a href="${escape(viewUrl(other.uri))}">${escape(other.title)}</a></li>`).join('')}</ul></section>` : ''}${properties.length ? `<details class="meta"><summary>文档属性</summary><dl>${properties.map(([key, value]) => `<dt>${escape(key)}</dt><dd>${escape(typeof value === 'object' ? stringify(value).trimEnd() : value)}</dd>`).join('')}</dl></details>` : ''}`, { vaultId: doc.vaultId, directory, filename: note.primary.relative.split('/').at(-1), header, outline: rendered.headings, query: returnTo ? new URL(returnTo, 'http://coral.local').searchParams.get('q') ?? '' : '' });
 }
 
 export function editPage(registry: VaultRegistry, doc: Document, options: { content?: string; version?: string; error?: string; returnTo?: string; conflict?: boolean } = {}) {
@@ -248,8 +298,13 @@ export function searchPage(registry: VaultRegistry, vaultId: string | undefined,
   const unavailableNames = found.unavailable_vaults.map(uri => [...registry.vaults.values()].find(vault => resourceUri(vault.id) === uri)?.name ?? uri);
   const pageUrl = (offset: number) => '/search?' + new URLSearchParams({ q: query, vault: vaultId ?? '', cursor: String(offset) });
   const header = `<div class="page-head"><h1>搜索${searching ? ` <span class="muted">${found.total} 条结果</span>` : ''}</h1></div>`;
+  const resultItems = found.results.map(doc => {
+    const noteUri = doc.note_uri ?? doc.uri;
+    const notePath = parseUri(noteUri).relative;
+    return `<div class="result-item" id="${documentAnchor(noteUri)}" data-document-uri="${escape(noteUri)}"><a href="${escape(withSearchReturn(viewUrl(doc.uri), pageUrl(cursor) + '#' + documentAnchor(noteUri)))}">${highlight(doc.title, query)}</a>${copyButton(doc.uri, `复制 Coral 链接：${doc.title}`)}<a class="result-location" href="${escape(directoryUrl(doc.vault_id, notePath.split('/').slice(0, -1).join('/')) + '#' + documentAnchor(noteUri))}" aria-label="打开结果目录：${escape(notePath)}">${escape(registry.vaults.get(doc.vault_id)?.name ?? doc.vault_id)} / ${highlight(notePath, query)}</a><p class="snippet">${highlight(doc.snippet, query)}</p></div>`;
+  }).join('');
   return layout(registry, '搜索', `${unavailableNames.length ? alert(`知识库「${unavailableNames.join('、')}」暂不可用，未包含在搜索结果中。`) : ''}${found.skipped_documents ? alert(`${found.skipped_documents} 个文档无法读取或超过大小限制，未包含在搜索结果中。`) : ''}
-    ${found.results.map(doc => `<div class="result-item" id="${documentAnchor(doc.uri)}" data-document-uri="${escape(doc.uri)}"><a href="${escape(withSearchReturn(viewUrl(doc.uri), pageUrl(cursor) + '#' + documentAnchor(doc.uri)))}">${highlight(doc.title, query)}</a>${copyButton(doc.uri, `复制 Coral 链接：${doc.title}`)}<a class="result-location" href="${escape(directoryUrl(doc.vault_id, doc.path.split('/').slice(0, -1).join('/')) + '#' + documentAnchor(doc.uri))}" aria-label="打开结果目录：${escape(doc.path)}">${escape(registry.vaults.get(doc.vault_id)?.name ?? doc.vault_id)} / ${highlight(doc.path, query)}</a><p class="snippet">${highlight(doc.snippet, query)}</p></div>`).join('') || `<div class="empty">${searching ? '没有找到匹配的内容。' : '输入标题、正文或路径关键词搜索笔记。'}</div>`}
+    ${resultItems || `<div class="empty">${searching ? '没有找到匹配的内容。' : '输入标题、正文或路径关键词搜索笔记。'}</div>`}
     <nav class="pagination" aria-label="搜索分页">${searching && cursor > 0 ? linkButton(pageUrl(Math.max(0, cursor - limit)), '上一页', 'chevron-left') : ''}${found.next_cursor !== null ? linkButton(pageUrl(found.next_cursor), '下一页', 'chevron-right') : ''}</nav>`, { vaultId, query, header, searchScope: true });
 }
 

@@ -2,8 +2,8 @@ import { test as base, expect, type Page } from '@playwright/test';
 import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createConfig } from '../src/config.js';
-import { createApp } from '../src/web.js';
+import { spawn } from 'node:child_process';
+import { resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
@@ -14,21 +14,33 @@ const test = base.extend<{ applicationDirectory: string; applicationUrl: string 
     finally { rmSync(directory, { recursive: true, force: true }); }
   },
   applicationUrl: async ({ applicationDirectory: directory }, use) => {
-    const application = createApp(createConfig({ data_dir: directory }));
-    application.registry.create('default', '项目设计', '# 数据模型\n\nMarkdown 是知识库的唯一内容真源。\n\n## 查询接口\n\n参见 [[开发记录]]。\n\n```typescript\nconst uri = "coral://vault/project/docs/design.md";\n```');
-    application.registry.create('default', '开发记录', '# 迭代记录\n\n完成知识库查询与文件下载。');
-    mkdirSync(join(directory, 'obsdian/default/assets'));
-    writeFileSync(join(directory, 'obsdian/default/assets/pixel.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9S8AAAAASUVORK5CYII=', 'base64'));
-    const server = application.app.listen(0, '127.0.0.1');
-    await new Promise<void>(resolve => server.once('listening', resolve));
-    const address = server.address();
-    if (!address || typeof address === 'string') throw new Error('Missing server address');
-    try { await use(`http://127.0.0.1:${address.port}`); }
-    finally {
-      server.closeAllConnections();
-      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-      application.close();
-    }
+    const config = join(directory, 'config.yaml');
+    writeFileSync(config, JSON.stringify({ data_dir: directory }));
+    const child = spawn(resolve('dist', process.platform === 'win32' ? 'coral.exe' : 'coral'), ['--config', config, '--listen', '127.0.0.1:0'], {
+      env: { ...process.env, CORAL_DATA_DIR: directory }, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '';
+    const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));
+    const base = await new Promise<string>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Go server startup timed out: ' + output)), 15000);
+      child.once('error', error => { clearTimeout(timeout); reject(error); });
+      child.once('exit', code => { clearTimeout(timeout); reject(new Error(`Go server exited ${code}: ${output}`)); });
+      child.stderr.on('data', data => { output += data.toString(); });
+      child.stdout.on('data', data => {
+        output += data.toString();
+        const match = /coral: (http:\/\/[^\s]+)/.exec(output);
+        if (match) { clearTimeout(timeout); resolve(match[1]); }
+      });
+    });
+    try {
+      for (const [title, content] of [['项目设计', '# 数据模型\n\nMarkdown 是知识库的唯一内容真源。\n\n## 查询接口\n\n参见 [[开发记录]]。\n\n```typescript\nconst uri = "coral://vault/project/docs/design.md";\n```'], ['开发记录', '# 迭代记录\n\n完成知识库查询与文件下载。']]) {
+        const response = await fetch(base + '/new', { method: 'POST', body: new URLSearchParams({ vault: 'default', title, content }) });
+        if (!response.ok) throw new Error('Cannot seed Go test vault: ' + await response.text());
+      }
+      mkdirSync(join(directory, 'obsdian/default/assets'));
+      writeFileSync(join(directory, 'obsdian/default/assets/pixel.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9S8AAAAASUVORK5CYII=', 'base64'));
+      await use(base);
+    } finally { child.kill(); await exited; }
   },
 });
 
@@ -37,10 +49,31 @@ async function openActions(page: Page, label: string) {
   if (await summary.locator('..').getAttribute('open') === null) await summary.click();
 }
 
+test('editor toolbar waits for its script before accepting interaction', async ({ page, applicationUrl }) => {
+  const listing = await (await page.request.get(applicationUrl + '/api/documents?vault=default')).json();
+  const document = listing.documents.find((item: { title: string }) => item.title === '项目设计');
+  let release!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/static/client.js', async route => { await pending; await route.continue(); });
+  try {
+    await page.goto(applicationUrl + '/edit?' + new URLSearchParams({ uri: document.uri }), { waitUntil: 'commit' });
+    const preview = page.getByRole('button', { name: '预览', exact: true });
+    await expect(preview).toBeDisabled();
+    await page.getByRole('textbox', { name: 'Markdown 正文', exact: true }).fill('Typed before the editor loaded.');
+    release();
+    await expect(preview).toBeEnabled();
+    await expect(page.getByRole('textbox', { name: 'Markdown 正文', exact: true })).toContainText('Typed before the editor loaded.');
+    await expect(page.locator('#save-status')).toHaveText('未保存');
+    await preview.click();
+    await expect(page.locator('.writing-surface')).toHaveAttribute('data-mode', 'preview');
+    await expect(page.locator('#preview')).toContainText('Typed before the editor loaded.');
+  } finally { release(); }
+});
+
 async function expectSimpleWorkspace(page: Page, scopedSearch = false) {
   const sidebar = page.getByRole('complementary', { name: '知识库导航' });
   const search = page.getByRole('search');
-  await expect(page.getByRole('complementary')).toHaveCount(1);
+  await expect(sidebar).toHaveCount(1);
   await expect(search).toHaveCount(1);
   await expect(sidebar.getByRole('search')).toHaveCount(1);
   await expect(search.getByRole('searchbox', { name: '搜索知识库' })).toBeVisible();
@@ -164,7 +197,7 @@ test('navigate a dense directory and return from editing without losing the curr
   await page.screenshot({ path: testInfo.outputPath('dense-directory-list.png') });
 });
 
-test('workspace uses one sidebar and a reading area at desktop widths', async ({ page, applicationUrl, applicationDirectory }, testInfo) => {
+test('workspace separates folder navigation, article outline and reading at desktop widths', async ({ page, applicationUrl, applicationDirectory }, testInfo) => {
   const folder = '推理系统/注意力机制';
   const root = join(applicationDirectory, 'obsdian/default');
   for (const directory of [folder, '推理系统/模型执行', '推理系统/并行计算']) mkdirSync(join(root, directory), { recursive: true });
@@ -178,12 +211,110 @@ test('workspace uses one sidebar and a reading area at desktop widths', async ({
     await expect(tree.locator('[aria-current="page"]')).toContainText('注意力机制');
     await expectSimpleWorkspace(page);
     await expect(page.locator('article')).toContainText('两个不同的限制');
-    const sidebar = (await page.getByRole('complementary').boundingBox())!;
+    const sidebar = (await page.getByRole('complementary', { name: '知识库导航' }).boundingBox())!;
     const article = (await page.locator('article').boundingBox())!;
-    expect(article.x).toBeGreaterThan(sidebar.x + sidebar.width);
+    const outline = (await page.getByRole('complementary', { name: '文章导航' }).boundingBox())!;
+    expect(outline.x).toBeGreaterThanOrEqual(sidebar.x + sidebar.width);
+    expect(article.x).toBeGreaterThan(outline.x + outline.width);
     expect(article.width).toBeGreaterThan(680);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
     await page.screenshot({ path: testInfo.outputPath(`workspace-reading-${width}.png`) });
+  }
+});
+
+test('article outline stays beside reading, supports keyboard jumps and tracks the current chapter', async ({ page, applicationUrl, applicationDirectory }, testInfo) => {
+  const root = join(applicationDirectory, 'obsdian/default');
+  mkdirSync(join(root, '学习笔记'));
+  const sections = Array.from({ length: 32 }, (_, i) => `## 第 ${i + 1} 章\n\n${'章节正文用于验证目录跳转与阅读位置。\n\n'.repeat(5)}${i === 0 ? '### 子章节 **重点**\n\n层级结构应当清晰。\n\n' : ''}`).join('');
+  writeFileSync(join(root, '学习笔记/outline.md'), '# 侧边目录示例\n\n开头介绍。\n\n' + sections + '\n## 重复标题\n\n重复一。\n\n## 重复标题\n\n重复二。\n\n```md\n## 代码不应进入目录\n```');
+  const url = applicationUrl + '/document?' + new URLSearchParams({ uri: 'coral://vault/default/' + encodeURIComponent('学习笔记') + '/outline.md', return_to: '/search?q=目录&cursor=20' });
+  await page.goto(url);
+  const toc = page.getByRole('navigation', { name: '文章目录', exact: true });
+  const navigation = page.getByRole('complementary', { name: '知识库导航' });
+  const outline = page.getByRole('complementary', { name: '文章导航' });
+  await expect(outline).toHaveCount(1);
+  await expect(outline.getByRole('navigation', { name: '文章目录', exact: true })).toHaveCount(1);
+  await expect(navigation.getByRole('navigation', { name: '文章目录', exact: true })).toHaveCount(0);
+  await expect(outline.getByRole('navigation', { name: '目录树', exact: true })).toHaveCount(0);
+  await expect(toc.getByRole('link')).toHaveCount(35);
+  await expect(toc.getByRole('link', { name: '子章节 重点', exact: true })).toBeVisible();
+  await expect(toc).not.toContainText('代码不应进入目录');
+  for (const width of [1024, 1280, 1920]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expectSimpleWorkspace(page);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+    const sidebar = (await navigation.boundingBox())!;
+    const article = (await page.locator('article').boundingBox())!;
+    const outlineBox = (await outline.boundingBox())!;
+    expect(outlineBox.x).toBeGreaterThanOrEqual(sidebar.x + sidebar.width);
+    expect(article.x).toBeGreaterThan(outlineBox.x + outlineBox.width);
+    expect(article.width).toBeGreaterThan(500);
+    await expect(page.getByRole('link', { name: '打开文件夹：学习笔记', exact: true })).toBeVisible();
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.screenshot({ path: testInfo.outputPath('article-outline-layout.png') });
+  const outlineTop = (await outline.boundingBox())!.y;
+  const chapter = toc.getByRole('link', { name: '第 20 章', exact: true });
+  await chapter.focus();
+  await page.keyboard.press('Enter');
+  await expect.poll(() => new URL(page.url()).hash).toBe('#' + encodeURIComponent('第-20-章'));
+  await expect(chapter).toHaveAttribute('aria-current', 'location');
+  const target = page.locator('article h2').filter({ hasText: /^第 20 章$/ });
+  expect(await target.evaluate(element => element.getBoundingClientRect().top)).toBeGreaterThan(80);
+  expect(await target.evaluate(element => element.getBoundingClientRect().top)).toBeLessThan(180);
+  expect(new URL(page.url()).searchParams.get('return_to')).toBe('/search?q=目录&cursor=20');
+  await page.locator('article h2').filter({ hasText: /^第 27 章$/ }).evaluate(element => element.scrollIntoView());
+  const later = toc.getByRole('link', { name: '第 27 章', exact: true });
+  await expect(later).toHaveAttribute('aria-current', 'location');
+  expect(await page.evaluate(() => scrollY)).toBeGreaterThan(1000);
+  expect((await outline.boundingBox())!.y).toBeCloseTo(outlineTop, 0);
+  await expect(outline).toBeInViewport();
+  const navBox = (await toc.boundingBox())!, linkBox = (await later.boundingBox())!;
+  expect(linkBox.y).toBeGreaterThanOrEqual(navBox.y);
+  expect(linkBox.y + linkBox.height).toBeLessThanOrEqual(navBox.y + navBox.height + 1);
+  await page.screenshot({ path: testInfo.outputPath('article-outline-reading.png') });
+  const duplicates = toc.getByRole('link', { name: '重复标题', exact: true });
+  expect(await duplicates.nth(0).getAttribute('href')).not.toBe(await duplicates.nth(1).getAttribute('href'));
+  await duplicates.nth(1).click();
+  await expect(duplicates.nth(1)).toHaveAttribute('aria-current', 'location');
+  await page.goBack();
+  await expect(chapter).toHaveAttribute('aria-current', 'location');
+  const toggle = outline.locator('.article-outline > summary');
+  await toggle.focus();
+  await page.keyboard.press('Enter');
+  await expect(toc).toBeHidden();
+  await expect(toggle).toBeFocused();
+  await expect(page.getByRole('navigation', { name: '目录树', exact: true })).toBeVisible();
+});
+
+test('article outline links work without JavaScript', async ({ browser, applicationUrl }) => {
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  try {
+    const page = await context.newPage();
+    await page.goto(applicationUrl + '/?vault=default');
+    await page.getByRole('link', { name: '项目设计', exact: true }).click();
+    const toc = page.getByRole('navigation', { name: '文章目录', exact: true });
+    await toc.getByRole('link', { name: '查询接口', exact: true }).click();
+    expect(new URL(page.url()).hash).toBe('#' + encodeURIComponent('查询接口'));
+    await expect(page.getByRole('link', { name: '编辑', exact: true })).toBeVisible();
+  } finally { await context.close(); }
+});
+
+test('outline jumps keep headings below a wrapped page header', async ({ page, applicationUrl, applicationDirectory }) => {
+  const root = join(applicationDirectory, 'obsdian/default');
+  writeFileSync(join(root, 'wrapped-title.md'), '---\ntitle: 深入理解分布式训练中的设备内存通信路径与缓存一致性机制以及性能瓶颈\n---\n# 长标题\n\n## 第一节\n\n' + '第一节正文。\n\n'.repeat(60) + '## 第二节\n\n' + '第二节正文。\n\n'.repeat(60));
+  const url = applicationUrl + '/document?' + new URLSearchParams({ uri: 'coral://vault/default/wrapped-title.md' });
+  for (const width of [1024, 1280]) {
+    await page.setViewportSize({ width, height: 720 });
+    await page.goto(url);
+    await page.getByRole('navigation', { name: '文章目录', exact: true }).getByRole('link', { name: '第二节', exact: true }).click();
+    const heading = (await page.locator('article h2').nth(1).boundingBox())!, header = (await page.locator('.topbar').boundingBox())!;
+    expect(heading.y).toBeGreaterThanOrEqual(header.y + header.height);
+    expect(heading.y).toBeLessThan(header.y + header.height + 35);
+    await page.reload();
+    await expect.poll(async () => (await page.locator('article h2').nth(1).boundingBox())!.y).toBeGreaterThanOrEqual(header.y + header.height);
   }
 });
 
@@ -851,10 +982,11 @@ test('deep folder stays visible and long reading resumes after editing and an MC
   await client.connect(new StreamableHTTPClientTransport(new URL(applicationUrl + '/mcp')));
   try {
     const read = await client.callTool({ name: 'read_document', arguments: { uri, max_chars: 64000 } });
-    const updated = await client.callTool({ name: 'update_document', arguments: { uri, version: read.structuredContent!.version, content: String(read.structuredContent!.content) + '\nAgent 添加的新内容。' } });
+    const updated = await client.callTool({ name: 'update_document', arguments: { uri, version: read.structuredContent!.version, content: String(read.structuredContent!.content) + '\n## Agent 新增章节\n\nAgent 添加的新内容。' } });
     expect(updated.isError).toBeFalsy();
     await page.evaluate(() => dispatchEvent(new Event('focus')));
     await expect(page.locator('article')).toContainText('Agent 添加的新内容。');
+    await expect(page.getByRole('navigation', { name: '文章目录', exact: true }).getByRole('link', { name: 'Agent 新增章节', exact: true })).toHaveCount(1);
     await expect.poll(() => page.evaluate(() => scrollY)).toBeGreaterThan(position - 80);
     await page.screenshot({ path: testInfo.outputPath('reading-resumed.png') });
     let navigations = 0;
@@ -1261,4 +1393,231 @@ test('recycle an entire knowledge base, restore it, and permanently delete it', 
   await page.getByRole('button', { name: '彻底删除知识库：recycle', exact: true }).click();
   await expect(page.getByRole('status')).toHaveText('已彻底删除回收内容。');
   await expect(page.getByRole('button', { name: '恢复知识库：recycle', exact: true })).toHaveCount(0);
+});
+
+async function createLanguageFixture(page: Page, applicationUrl: string) {
+  const directory = '双语课程';
+  await page.request.post(applicationUrl + '/directories/new', { form: { vault: 'default', name: directory } });
+  const response = await page.request.post(applicationUrl + '/new', { form: {
+    vault: 'default', directory, title: 'KV 缓存', content: '# KV 缓存\n\n中文原文。\n\n## 容量与带宽\n\nKV 缓存的容量与带宽决定并发与解码速度。',
+  }, headers: { Accept: 'application/json' } });
+  expect(response.ok()).toBeTruthy();
+  return { directory, ...await response.json() as { uri: string; version: string; url: string } };
+}
+
+test('bilingual notes add and edit a language while browsing and search show one note', async ({ page, applicationUrl }, testInfo) => {
+  const source = await createLanguageFixture(page, applicationUrl);
+  await page.goto(applicationUrl + source.url);
+  await page.getByRole('link', { name: '添加英文版', exact: true }).click();
+  await expect(page.getByRole('combobox', { name: '原文语言', exact: true })).toHaveValue('zh');
+  await expect(page.getByRole('combobox', { name: '新增语言', exact: true })).toHaveValue('en');
+  await page.getByRole('textbox', { name: '标题', exact: true }).fill('KV Cache');
+  await page.getByRole('textbox', { name: '新版本正文', exact: true }).fill('# KV Cache\n\nEnglish version.\n\n## Bandwidth\n\nKV Cache bandwidth limits decoding.');
+  await expect(page.locator('#preview h2')).toHaveText('Bandwidth');
+  await page.getByRole('button', { name: '保存版本', exact: true }).click();
+  await expect(page.locator('article')).toHaveAttribute('lang', 'en');
+  const englishUri = new URL(page.url()).searchParams.get('uri')!;
+  expect(englishUri).not.toBe(source.uri);
+  await expect(page.locator('.page-head h1')).toHaveText('KV Cache');
+  await expect(page.getByRole('navigation', { name: '文章目录', exact: true }).getByRole('link', { name: 'Bandwidth', exact: true })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: '文末阅读导航', exact: true })).toContainText('第 1 / 1 篇');
+  await page.screenshot({ path: testInfo.outputPath('bilingual-reading-english.png') });
+  await page.getByRole('link', { name: '切换到中文', exact: true }).click();
+  await expect(page.locator('article')).toHaveAttribute('lang', 'zh');
+  await expect(page.locator('article')).toContainText('中文原文。');
+  await expect(page.locator('.page-head h1')).toHaveText('KV 缓存');
+  await page.screenshot({ path: testInfo.outputPath('bilingual-reading-chinese.png') });
+  await page.getByRole('link', { name: '切换到英文', exact: true }).focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('article')).toHaveAttribute('lang', 'en');
+  await page.getByRole('link', { name: '编辑', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Markdown 正文', exact: true }).fill('# KV Cache\n\n## Bandwidth\n\nKV Cache bandwidth was updated.');
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(page.locator('#save-status')).toHaveText('已保存');
+  await page.getByRole('link', { name: '返回阅读', exact: true }).click();
+  await expect(page.locator('article')).toContainText('bandwidth was updated');
+  const original = await (await page.request.get(applicationUrl + '/api/document?' + new URLSearchParams({ uri: source.uri }))).json();
+  expect(original.content).toContain('中文原文。');
+  expect(original.content).not.toContain('bandwidth was updated');
+  await page.getByRole('link', { name: '所在目录', exact: true }).click();
+  await expect(page.locator('.file-list [data-document-uri]')).toHaveCount(1);
+  await expect(page.locator('.file-list li:target .page-link')).toHaveText('KV 缓存');
+  await expect(page.locator('.file-list .is-last-read .page-link')).toHaveText('KV 缓存');
+  await page.goto(applicationUrl + '/search?' + new URLSearchParams({ q: 'KV', vault: 'default' }));
+  await expect(page.locator('.result-item')).toHaveCount(1);
+  await expect(page.locator('.result-item > a').first()).toHaveText('KV 缓存');
+  await expect(page.locator('.snippet')).toContainText('容量与带宽');
+  await page.locator('.result-item > a').first().click();
+  await expect(page.locator('article')).toHaveAttribute('lang', 'zh');
+  await page.getByRole('link', { name: '切换到英文', exact: true }).click();
+  await expect(page.locator('article')).toHaveAttribute('lang', 'en');
+  await page.getByRole('link', { name: '切换到中文', exact: true }).click();
+  await page.getByRole('link', { name: '编辑', exact: true }).click();
+  await page.getByRole('link', { name: '返回阅读', exact: true }).click();
+  await page.getByRole('link', { name: '返回搜索', exact: true }).click();
+  expect(new URL(page.url()).searchParams.get('q')).toBe('KV');
+  await expect(page.locator('.result-item:target')).toBeVisible();
+  await page.goto(applicationUrl + '/search?' + new URLSearchParams({ q: 'bandwidth', vault: 'default' }));
+  await expect(page.locator('.result-item')).toHaveCount(0);
+  await expect(page.getByText('没有找到匹配的内容。', { exact: true })).toBeVisible();
+  const nextResponse = await page.request.post(applicationUrl + '/new', { form: {
+    vault: 'default', directory: source.directory, title: 'zz 下一篇', content: '# zz 下一篇\n\n下一篇的中文正文。',
+  }, headers: { Accept: 'application/json' } });
+  const next = await nextResponse.json();
+  const nextEnglish = await page.request.post(applicationUrl + '/languages/new', { form: {
+    uri: next.uri, version: next.version, source_language: 'zh', language: 'en', title: 'Next English', content: '# Next English\n\nNext English version.',
+  }, headers: { Accept: 'application/json' } });
+  expect(nextEnglish.ok()).toBeTruthy();
+  await page.goto(applicationUrl + '/document?' + new URLSearchParams({ uri: englishUri }));
+  await page.getByRole('navigation', { name: '文末阅读导航', exact: true }).getByRole('link', { name: /下一篇/ }).click();
+  await expect(page.locator('article')).toHaveAttribute('lang', 'zh');
+  await expect(page.locator('.page-head h1')).toHaveText('zz 下一篇');
+});
+
+test('bilingual language creation and switching work with native forms without JavaScript', async ({ browser, page, applicationUrl }, testInfo) => {
+  const source = await createLanguageFixture(page, applicationUrl);
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  try {
+    const native = await context.newPage();
+    await native.goto(applicationUrl + source.url);
+    await native.getByRole('link', { name: '添加英文版', exact: true }).click();
+    await native.getByRole('textbox', { name: '标题', exact: true }).fill('Native English');
+    await native.getByRole('textbox', { name: '新版本正文', exact: true }).fill('# Native English\n\n## A chapter\n\nCreated without browser scripts.');
+    await native.getByRole('button', { name: '保存版本', exact: true }).click();
+    await expect(native.locator('article')).toContainText('Created without browser scripts.');
+    await native.getByRole('link', { name: '切换到中文', exact: true }).click();
+    await expect(native.locator('article')).toContainText('中文原文。');
+    await native.getByRole('link', { name: '所在目录', exact: true }).click();
+    await expect(native.locator('.file-list [data-document-uri]')).toHaveCount(1);
+    await native.screenshot({ path: testInfo.outputPath('bilingual-native-directory.png') });
+  } finally { await context.close(); }
+});
+
+test('bilingual creation rejects a stale source and retains its independent language draft', async ({ page, context, applicationUrl }, testInfo) => {
+  const source = await createLanguageFixture(page, applicationUrl);
+  await page.goto(applicationUrl + '/languages/new?' + new URLSearchParams({ uri: source.uri, language: 'en' }));
+  const editor = page.getByRole('textbox', { name: '新版本正文', exact: true });
+  await editor.fill('# Unmerged translation\n\nKeep my English draft.');
+  const other = await context.newPage();
+  try {
+    await other.goto(applicationUrl + '/edit?' + new URLSearchParams({ uri: source.uri }));
+    await other.getByRole('textbox', { name: 'Markdown 正文', exact: true }).fill('原文的另一个独立草稿。');
+    await expect(other.locator('#save-status')).toHaveText('草稿已存于本机');
+    await expect(page.locator('#save-status')).toHaveText('草稿已存于本机');
+    expect(await page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('coral:draft:')).length)).toBe(2);
+    const updated = await page.request.post(applicationUrl + '/edit', { form: { uri: source.uri, version: source.version, content: '# KV 缓存\n\n外部更新的原文。' }, headers: { Accept: 'application/json' } });
+    expect(updated.ok()).toBeTruthy();
+    await page.getByRole('button', { name: '保存版本', exact: true }).click();
+    await expect(page.locator('#save-status')).toHaveText('保存失败');
+    await expect(page.locator('#editor')).toHaveValue('# Unmerged translation\n\nKeep my English draft.');
+    await expect(page.locator('[name="version"]')).toHaveValue(source.version);
+    await expect(page.getByRole('link', { name: '查看最新版本', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '下载我的草稿', exact: true })).toBeVisible();
+    const current = await (await page.request.get(applicationUrl + '/api/document?' + new URLSearchParams({ uri: source.uri }))).json();
+    expect(current.language_versions).toHaveLength(1);
+    page.once('dialog', dialog => dialog.accept());
+    await page.reload();
+    await page.getByRole('button', { name: '恢复草稿', exact: true }).click();
+    await expect(page.locator('#editor')).toHaveValue('# Unmerged translation\n\nKeep my English draft.');
+    await expect(page.locator('[name="version"]')).toHaveValue(source.version);
+    await page.screenshot({ path: testInfo.outputPath('bilingual-source-conflict.png') });
+  } finally { await other.close({ runBeforeUnload: false }); }
+});
+
+test('bilingual versions added through MCP appear when the reading window is reactivated', async ({ page, applicationUrl }, testInfo) => {
+  const source = await createLanguageFixture(page, applicationUrl);
+  await page.goto(applicationUrl + source.url);
+  const client = new Client({ name: 'bilingual-reader-agent', version: '1' });
+  await client.connect(new StreamableHTTPClientTransport(new URL(applicationUrl + '/mcp')));
+  try {
+    const created = await client.callTool({ name: 'create_language_version', arguments: {
+      uri: source.uri, version: source.version, language: 'en', title: 'Agent English', content: '# Agent English\n\n## English chapter\n\nThe agent supplied this translation.',
+    } });
+    expect(created.isError).toBeFalsy();
+    await page.evaluate(() => dispatchEvent(new Event('focus')));
+    await expect(page.getByRole('link', { name: '切换到英文', exact: true })).toBeVisible();
+    await page.getByRole('link', { name: '切换到英文', exact: true }).click();
+    await expect(page.locator('article')).toContainText('The agent supplied this translation.');
+    await expect(page.getByRole('navigation', { name: '文章目录', exact: true }).getByRole('link', { name: 'English chapter', exact: true })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath('bilingual-mcp-reading.png') });
+  } finally { await client.close(); }
+});
+
+test('bilingual English originals can add Chinese and restore language choices with the draft', async ({ page, applicationUrl }) => {
+  const response = await page.request.post(applicationUrl + '/new', { form: {
+    vault: 'default', title: 'An English original', content: '# An English original\n\nThe original is written in English.',
+  }, headers: { Accept: 'application/json' } });
+  const source = await response.json();
+  await page.goto(applicationUrl + source.url);
+  await page.getByRole('link', { name: '添加英文版', exact: true }).click();
+  await page.getByRole('combobox', { name: '原文语言', exact: true }).selectOption('en');
+  await page.getByRole('combobox', { name: '新增语言', exact: true }).selectOption('zh');
+  await page.getByRole('textbox', { name: '标题', exact: true }).fill('中文版本');
+  await page.getByRole('textbox', { name: '新版本正文', exact: true }).fill('# 中文版本\n\n这篇笔记对应同一份英文原文。');
+  await expect(page.locator('#save-status')).toHaveText('草稿已存于本机');
+  page.once('dialog', dialog => dialog.accept());
+  await page.reload();
+  await page.getByRole('button', { name: '恢复草稿', exact: true }).click();
+  await expect(page.getByRole('combobox', { name: '原文语言', exact: true })).toHaveValue('en');
+  await expect(page.getByRole('combobox', { name: '新增语言', exact: true })).toHaveValue('zh');
+  await page.getByRole('button', { name: '保存版本', exact: true }).click();
+  await expect(page.locator('article')).toHaveAttribute('lang', 'zh');
+  await expect(page.locator('article')).toContainText('这篇笔记对应同一份英文原文。');
+  await page.getByRole('link', { name: '切换到英文', exact: true }).click();
+  await expect(page.locator('article')).toContainText('The original is written in English.');
+});
+
+test('bilingual backlinks show each referring note once in Chinese and omit the note itself', async ({ page, applicationUrl }) => {
+  const source = await createLanguageFixture(page, applicationUrl);
+  const englishResponse = await page.request.post(applicationUrl + '/languages/new', { form: {
+    uri: source.uri, version: source.version, source_language: 'zh', language: 'en', title: 'English version', content: '# English version\n\n[[双语课程/KV 缓存|Chinese original]]',
+  }, headers: { Accept: 'application/json' } });
+  expect(englishResponse.ok()).toBeTruthy();
+  const english = await englishResponse.json();
+  const englishDocument = await (await page.request.get(applicationUrl + '/api/document?' + new URLSearchParams({ uri: english.uri }))).json();
+  const referringResponse = await page.request.post(applicationUrl + '/new', { form: {
+    vault: 'default', title: '引用笔记', content: '[[双语课程/KV 缓存]]',
+  }, headers: { Accept: 'application/json' } });
+  const referring = await referringResponse.json();
+  const translatedReferring = await page.request.post(applicationUrl + '/languages/new', { form: {
+    uri: referring.uri, version: referring.version, source_language: 'zh', language: 'en', title: 'Referring note', content: '[[' + englishDocument.path.replace(/\.md$/, '') + ']]',
+  }, headers: { Accept: 'application/json' } });
+  expect(translatedReferring.ok()).toBeTruthy();
+  await page.goto(applicationUrl + english.url);
+  await expect(page.locator('.backlinks li')).toHaveCount(1);
+  await expect(page.locator('.backlinks li > a')).toHaveText('引用笔记');
+  await page.locator('.backlinks li > a').click();
+  await expect(page.locator('article')).toHaveAttribute('lang', 'zh');
+  await expect(page.locator('.page-head h1')).toHaveText('引用笔记');
+});
+
+test('bilingual new-version preview keeps its own metadata and resolves relative images from the source', async ({ page, applicationUrl }, testInfo) => {
+  await page.request.post(applicationUrl + '/directories/new', { form: { vault: 'default', name: '排版预览' } });
+  const response = await page.request.post(applicationUrl + '/new', { form: {
+    vault: 'default', directory: '排版预览', title: '中文缩进原文', content: '---\nparagraph_indent: 2em\n---\n# 中文缩进原文\n\n原文正文有缩进。\n\n![像素](../assets/pixel.png)',
+  }, headers: { Accept: 'application/json' } });
+  expect(response.ok()).toBeTruthy();
+  const source = await response.json();
+  await page.goto(applicationUrl + source.url);
+  const sourceParagraph = page.locator('article > p').filter({ hasText: '原文正文有缩进。' });
+  expect(await sourceParagraph.evaluate(element => getComputedStyle(element).textIndent)).toBe('40px');
+  await page.getByRole('link', { name: '添加英文版', exact: true }).click();
+  await page.getByRole('textbox', { name: '标题', exact: true }).fill('English without inherited indentation');
+  const editor = page.getByRole('textbox', { name: '新版本正文', exact: true });
+  const content = '# English without inherited indentation\n\nA paragraph with no indentation.\n\n![Pixel](../assets/pixel.png)';
+  await editor.fill(content);
+  const previewParagraph = page.locator('#preview > p').filter({ hasText: 'A paragraph with no indentation.' });
+  await expect.poll(() => previewParagraph.evaluate(element => getComputedStyle(element).textIndent)).toBe('0px');
+  await expect.poll(() => page.locator('#preview img').evaluate((image: HTMLImageElement) => image.naturalWidth)).toBe(1);
+  await editor.fill('---\nparagraph_indent: 2em\n---\n' + content);
+  await expect.poll(() => previewParagraph.evaluate(element => getComputedStyle(element).textIndent)).toBe('40px');
+  await editor.fill(content);
+  await expect.poll(() => previewParagraph.evaluate(element => getComputedStyle(element).textIndent)).toBe('0px');
+  await page.getByRole('button', { name: '保存版本', exact: true }).click();
+  await expect(page.locator('article')).toHaveAttribute('lang', 'en');
+  expect(await page.locator('article > p').filter({ hasText: 'A paragraph with no indentation.' }).evaluate(element => getComputedStyle(element).textIndent)).toBe('0px');
+  await expect.poll(() => page.locator('article img').evaluate((image: HTMLImageElement) => image.naturalWidth)).toBe(1);
+  await page.getByRole('link', { name: '切换到中文', exact: true }).click();
+  expect(await sourceParagraph.evaluate(element => getComputedStyle(element).textIndent)).toBe('40px');
+  await page.screenshot({ path: testInfo.outputPath('bilingual-paragraph-parity.png') });
 });

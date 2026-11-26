@@ -7,9 +7,9 @@ import { pathToFileURL } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { createConfig } from '../src/config.js';
-import { createApp } from '../src/web.js';
-import { AppError } from '../src/content.js';
+import { createConfig } from './src/config.js';
+import { createApp } from './src/web.js';
+import { AppError } from './src/content.js';
 
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => { while (cleanup.length) await cleanup.pop()!(); });
@@ -337,7 +337,7 @@ test('Web pages share one sidebar search form and expose its scope only on searc
     const response = await fetch(base + path);
     assert.equal(response.status, 200);
     const html = await response.text();
-    const sidebars = [...html.matchAll(/<aside\b[^>]*>[\s\S]*?<\/aside>/g)];
+    const sidebars = [...html.matchAll(/<aside\b[^>]*aria-label="知识库导航"[^>]*>[\s\S]*?<\/aside>/g)];
     assert.equal(sidebars.length, 1, path);
     const forms = [...html.matchAll(/<form\b[^>]*>[\s\S]*?<\/form>/g)].filter(match => /\brole="search"/.test(match[0]));
     assert.equal(forms.length, 1, path);
@@ -672,7 +672,7 @@ test('MCP Streamable HTTP handshake, tools, resources, search, read and download
   cleanup.push(() => client.close());
   const listed = await client.listTools();
   const readTools = ['browse_directory', 'download_document', 'get_writing_guide', 'list_documents', 'list_trash', 'list_vaults', 'read_document', 'search_documents'];
-  const writeTools = ['create_directory', 'create_document', 'create_vault', 'delete_directory', 'delete_document', 'delete_vault', 'move_document', 'rename_directory', 'rename_document', 'restore_trash', 'restore_vault', 'update_document'];
+  const writeTools = ['create_directory', 'create_document', 'create_language_version', 'create_vault', 'delete_directory', 'delete_document', 'delete_vault', 'move_document', 'rename_directory', 'rename_document', 'restore_trash', 'restore_vault', 'update_document'];
   assert.deepEqual(listed.tools.map(tool => tool.name).sort(), [...readTools, ...writeTools].sort());
   for (const tool of listed.tools) {
     assert.equal(tool.annotations?.readOnlyHint, readTools.includes(tool.name));
@@ -969,7 +969,7 @@ test('MCP stdio reads and writes through an actual agent subprocess without stdo
   const configPath = join(root, 'config.yaml');
   writeFileSync(configPath, JSON.stringify({ data_dir: './data', vaults: { project: { path: './project' } } }));
   const client = new Client({ name: 'stdio-test-agent', version: '1.0.0' });
-  const transport = new StdioClientTransport({ command: process.execPath, args: ['--import', pathToFileURL(resolve('node_modules/tsx/dist/loader.mjs')).href, resolve('src/stdio.ts')], cwd: root, env: { ...process.env as Record<string, string>, CORAL_CONFIG: configPath }, stderr: 'pipe' });
+  const transport = new StdioClientTransport({ command: process.execPath, args: ['--import', pathToFileURL(resolve('node_modules/tsx/dist/loader.mjs')).href, resolve('tests/reference/src/stdio.ts')], cwd: root, env: { ...process.env as Record<string, string>, CORAL_CONFIG: configPath }, stderr: 'pipe' });
   await client.connect(transport);
   cleanup.push(() => client.close());
   assert.match(client.getInstructions()!, /get_writing_guide/);

@@ -1,0 +1,847 @@
+[
+  {
+    "name": "get_writing_guide",
+    "description": "Read the Coral authoring guide before creating or editing documents. Includes writing and layout conventions, agent editorial review before writes (topic=ci), Chinese/English note versions (topic=languages), LaTeX formulas and JSON escaping (topic=math), supported links, complete read/write and version-conflict workflows, Mermaid syntax, self-contained interactive HTML/CSS/JS sandbox constraints, and copyable Markdown examples. No Vault access or changes. Default topic=all; use html or examples when drawing interactive diagrams. Also available as coral://guide/authoring.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "topic": {
+          "type": "string",
+          "enum": [
+            "all",
+            "workflow",
+            "languages",
+            "writing",
+            "ci",
+            "links",
+            "math",
+            "mermaid",
+            "html",
+            "examples"
+          ],
+          "default": "all",
+          "description": "all: complete guide; workflow: tools/pagination/versions; languages: Chinese/English versions of one note; writing: prose/layout; ci: pre-write shuorenhua agent review and editing boundaries; links: links/assets; math: LaTeX formulas and JSON escaping; mermaid: static diagrams; html: interactive diagrams and sandbox; examples: copyable Markdown and call sequences."
+        }
+      },
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "list_vaults",
+    "description": "List available Obsidian knowledge bases and document counts.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "list_documents",
+    "description": "List notes within one Vault, optionally limited to a directory and its descendants, with cursor pagination. Chinese/English versions appear as one note with language_versions; the Chinese version is the default entry when available. Returns coral URIs and Vault-relative paths. Folders follow the Obsidian Vault layout; no fixed document categories.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "vault_id": {
+          "type": "string"
+        },
+        "directory": {
+          "type": "string",
+          "default": ""
+        },
+        "cursor": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 50
+        }
+      },
+      "required": [
+        "vault_id"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "search_documents",
+    "description": "Search keywords in note titles, body text, filenames and Vault-relative paths. For a grouped Chinese/English note, search only the Chinese version and return one Chinese entry; the English alternative is read through the reader language switch or its explicit language_versions URI. Ordinary notes without a Chinese version remain searchable in their existing language. Whitespace-separated terms are combined with AND; each Chinese term matches consecutive characters. Exact titles and filenames rank first. Omit vault_id to search all Vaults, or specify it to search one. Returns source Vault IDs and paths, matching snippets, line numbers, document versions and coral URIs; follow next_cursor for more results.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "vault_id": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 20
+        },
+        "cursor": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "read_document",
+    "description": "Read one language file as raw Markdown, including frontmatter, in bounded chunks or by an exact ATX heading. Returns note_uri, current language, language_versions and note_version to discover other versions of the same note. If unrelated directories prevent language discovery, readable content still returns with language_info_incomplete=true and language_info_error, without incomplete group metadata; do not infer that no other version exists. Each language URI has its own content version. offset and next_offset are UTF-16 code unit offsets within the selected content. Pass the returned version when continuing to detect external edits.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "uri": {
+          "type": "string",
+          "maxLength": 4000,
+          "description": "Document resource URI, e.g. coral://vault/project/docs/design.md. Never a local path."
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "max_chars": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64000,
+          "default": 16000
+        },
+        "heading": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "uri"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "download_document",
+    "description": "Download the complete original Markdown file, up to 16 MiB. Returns an embedded MCP resource with base64-encoded bytes and metadata; the URI stays coral://vault/..., with no local filesystem path.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "uri": {
+          "type": "string",
+          "maxLength": 4000,
+          "description": "Document resource URI, e.g. coral://vault/project/docs/design.md. Never a local path."
+        }
+      },
+      "required": [
+        "uri"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "browse_directory",
+    "description": "List immediate subfolders and document metadata in a Vault directory. Index documents (index.md/index.markdown, case-insensitive) come first, then folders, then other documents in natural filename order. Folder entries include coral URIs, versions and file counts for delete_directory. Paginate folders and documents together with cursor and limit.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "vault_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]+$",
+          "description": "Vault ID returned by list_vaults."
+        },
+        "directory": {
+          "type": "string",
+          "maxLength": 4000,
+          "default": "",
+          "description": "Vault-relative directory, using forward slashes. Empty means the Vault root."
+        },
+        "cursor": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 50
+        }
+      },
+      "required": [
+        "vault_id"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "create_vault",
+    "description": "Create a managed Obsidian knowledge base. Name becomes its lowercase directory and ID: start with an English letter, then letters, digits, hyphens or underscores, up to 64 characters. Existing or trashed Vaults are never overwritten.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 2000,
+          "default": ""
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "delete_vault",
+    "description": "Move a managed Vault and all its files to trash using its version from list_vaults. For an external Vault, recycle only its registration and preserve the external files. Recover with restore_vault.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "vault_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]+$",
+          "description": "Vault ID returned by list_vaults."
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Latest version returned by the corresponding read or listing tool. Required to detect concurrent changes."
+        }
+      },
+      "required": [
+        "vault_id",
+        "version"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "create_directory",
+    "description": "Create an empty folder under an existing Vault-relative parent directory. name is one folder name; directory is the parent. Existing files and folders are never overwritten.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "vault_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]+$",
+          "description": "Vault ID returned by list_vaults."
+        },
+        "directory": {
+          "type": "string",
+          "maxLength": 4000,
+          "default": "",
+          "description": "Vault-relative directory, using forward slashes. Empty means the Vault root."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
+      },
+      "required": [
+        "vault_id",
+        "name"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "delete_directory",
+    "description": "Move a folder, its nested documents and attachments to trash. Use its coral URI and version from browse_directory; concurrent changes cause an error. Vault roots cannot be deleted with this tool.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "uri": {
+          "type": "string",
+          "maxLength": 4000,
+          "description": "Document resource URI, e.g. coral://vault/project/docs/design.md. Never a local path."
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Latest version returned by the corresponding read or listing tool. Required to detect concurrent changes."
+        }
+      },
+      "required": [
+        "uri",
+        "version"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "rename_document",
+    "description": "Rename a document within its current parent directory using its latest version from read_document. name is the complete new filename, including .md or .markdown. A grouped Chinese/English note renames both files; name refers to the primary filename. Set update_links=true to maintain resolvable links and images in this Vault, including references in other notes. Returns the new URI/version, updated_documents and unresolved_links. Default false preserves original file bytes. On partial recovery, error structuredContent.recovery identifies the operation and affected URIs.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "uri": {
+          "type": "string",
+          "maxLength": 4000,
+          "description": "Document resource URI, e.g. coral://vault/project/docs/design.md. Never a local path."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Latest version returned by the corresponding read or listing tool. Required to detect concurrent changes."
+        },
+        "note_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Latest note_version from read_document or a note listing. Pass it when moving, renaming or deleting a bilingual note to detect edits to either language."
+        },
+        "update_links": {
+          "type": "boolean",
+          "default": false,
+          "description": "Set true to maintain resolvable links and relative images within this Vault. May update other notes; returns updated_documents and unresolved_links. False preserves original bytes."
+        }
+      },
+      "required": [
+        "uri",
+        "name",
+        "version"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "rename_directory",
+    "description": "Rename a directory within its current parent directory using its latest version from browse_directory. name is the complete new filename. Set update_links=true to maintain resolvable links and images in this Vault, including references in other notes. Returns the new URI/version, updated_documents and unresolved_links. Default false preserves original file bytes. On partial recovery, error structuredContent.recovery identifies the operation and affected URIs.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "uri": {
+          "type": "string",
+          "maxLength": 4000,
+          "description": "Document resource URI, e.g. coral://vault/project/docs/design.md. Never a local path."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Latest version returned by the corresponding read or listing tool. Required to detect concurrent changes."
+        },
+        "note_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Latest note_version from read_document or a note listing. Pass it when moving, renaming or deleting a bilingual note to detect edits to either language."
+        },
+        "update_links": {
+          "type": "boolean",
+          "default": false,
+          "description": "Set true to maintain resolvable links and relative images within this Vault. May update other notes; returns updated_documents and unresolved_links. False preserves original bytes."
+        }
+      },
+      "required": [
+        "uri",
+        "name",
+        "version"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "move_document",
+    "description": "Move one Markdown note into an existing directory within its current Vault, preserving its filename. A grouped Chinese/English note moves both language files together. directory is Vault-relative, for example work/2026-11; empty means the root. Get the latest version from read_document; use create_directory first for missing destinations. Refuses stale versions, symlinks, traversal and collisions. Set update_links=true to maintain resolvable links and relative images, including references in other notes; returns updated_documents and unresolved_links alongside the new URI/version. Default false preserves original bytes and YAML. Partial recovery returns error structuredContent.recovery with operation and affected URIs.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "uri": {
+          "type": "string",
+          "maxLength": 4000,
+          "description": "Document resource URI, e.g. coral://vault/project/docs/design.md. Never a local path."
+        },
+        "directory": {
+          "type": "string",
+          "maxLength": 4000,
+          "description": "Existing Vault-relative target directory. Pass an empty string explicitly to move to the Vault root."
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Latest version returned by the corresponding read or listing tool. Required to detect concurrent changes."
+        },
+        "note_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Latest note_version from read_document or a note listing. Pass it when moving, renaming or deleting a bilingual note to detect edits to either language."
+        },
+        "update_links": {
+          "type": "boolean",
+          "default": false,
+          "description": "Set true to maintain resolvable links and relative images within this Vault. May update other notes; returns updated_documents and unresolved_links. False preserves original bytes."
+        }
+      },
+      "required": [
+        "uri",
+        "directory",
+        "version"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "create_document",
+    "description": "Create a Markdown document with a title and optional YAML frontmatter in content. Before writing, call get_writing_guide for conventions and examples, then complete the separate shuorenhua agent review described by topic=ci; fix issues before saving and omit review reports from content. Omit disclaimers and repetitive liability notices from authored prose; do not restate user responsibility. Prefer fenced html for diagrams, including diagrams adapted from existing material: attractive layout and self-contained HTML/CSS/JS with optional interaction. Fenced mermaid is also supported; html source shows code only. Missing parent directories are created. Optional filename is a filename stem without .md; otherwise title is used. Name collisions get numeric suffixes, never overwrite. Returns the actual URI and version.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "vault_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]+$",
+          "description": "Vault ID returned by list_vaults."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "content": {
+          "type": "string",
+          "maxLength": 16777216,
+          "description": "Complete Markdown text with real newlines and optional YAML frontmatter; maximum serialized file size 16 MiB. Call get_writing_guide before authoring and complete its agent editorial review (topic=ci) before writing; keep review reports out of content. Omit disclaimers and repetitive liability notices from authored prose; do not restate user responsibility. Write LaTeX formulas as $...$ inline or $$ on separate lines for display math; use get_writing_guide(topic=math) for examples and JSON escaping. Backticks and text/latex fences display source only. Prefer fenced html for diagram creation and revision, converting existing diagrams in the requested editing scope to HTML where practical while preserving their meaning. Self-contained HTML/CSS/JS runs in a sandbox (no external CDN, network or parent access). Fenced mermaid is also supported. html source displays code. Raw HTML outside fences is escaped.",
+          "default": ""
+        },
+        "directory": {
+          "type": "string",
+          "maxLength": 4000,
+          "default": "",
+          "description": "Vault-relative directory, using forward slashes. Empty means the Vault root."
+        },
+        "filename": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        }
+      },
+      "required": [
+        "vault_id",
+        "title"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "create_language_version",
+    "description": "Add a Chinese or English version to an existing note using complete Markdown supplied by the caller. Call get_writing_guide(topic=languages) and complete its editorial review before writing. Read the entire current source with read_document and pass its latest version. language selects the missing target; source_language identifies an ordinary source file, default zh, and must match an existing group. Optional title names the new version. This creates a separate Markdown file, links both files under one note and returns its URI/version; an existing target language is never overwritten. Coral does not translate or synchronize content automatically. Update an existing version with update_document at its own URI/version.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "uri": {
+          "type": "string",
+          "maxLength": 4000,
+          "description": "Document resource URI, e.g. coral://vault/project/docs/design.md. Never a local path."
+        },
+        "language": {
+          "type": "string",
+          "enum": [
+            "zh",
+            "en"
+          ],
+          "description": "Document language: zh for Chinese or en for English."
+        },
+        "content": {
+          "type": "string",
+          "maxLength": 16777216,
+          "description": "Complete Markdown text with real newlines and optional YAML frontmatter; maximum serialized file size 16 MiB. Call get_writing_guide before authoring and complete its agent editorial review (topic=ci) before writing; keep review reports out of content. Omit disclaimers and repetitive liability notices from authored prose; do not restate user responsibility. Write LaTeX formulas as $...$ inline or $$ on separate lines for display math; use get_writing_guide(topic=math) for examples and JSON escaping. Backticks and text/latex fences display source only. Prefer fenced html for diagram creation and revision, converting existing diagrams in the requested editing scope to HTML where practical while preserving their meaning. Self-contained HTML/CSS/JS runs in a sandbox (no external CDN, network or parent access). Fenced mermaid is also supported. html source displays code. Raw HTML outside fences is escaped."
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Latest version returned by the corresponding read or listing tool. Required to detect concurrent changes."
+        },
+        "source_language": {
+          "$ref": "#/properties/language",
+          "description": "Document language: zh for Chinese or en for English."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "uri",
+        "language",
+        "content",
+        "version"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "update_document",
+    "description": "Replace the current language file with complete Markdown using the latest version from read_document. Other language versions are preserved and are not automatically synchronized. Keep coral_note_id, coral_language and coral_primary unchanged; the service preserves these grouping fields when omitted and rejects attempts to change them. Consult get_writing_guide; read every chunk without a heading filter before editing, preserve unrelated content, and reread/reconcile on version conflicts. Before saving, complete the separate shuorenhua agent review described by topic=ci, fix issues and recheck; omit review reports from content. Omit disclaimers and repetitive liability notices from authored prose; do not restate user responsibility. Prefer fenced html for diagram creation and revision, converting existing diagrams in the requested editing scope to HTML where practical while preserving their meaning. Use attractive layout and optional interaction with self-contained HTML/CSS/JS (no CDN/network). Fenced mermaid is also supported; html source displays code. Includes YAML frontmatter when supplied; omitting frontmatter preserves existing properties. Keeps a backup and records Git history when available. Returns the updated URI and version.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "uri": {
+          "type": "string",
+          "maxLength": 4000,
+          "description": "Document resource URI, e.g. coral://vault/project/docs/design.md. Never a local path."
+        },
+        "content": {
+          "type": "string",
+          "maxLength": 16777216,
+          "description": "Complete Markdown text with real newlines and optional YAML frontmatter; maximum serialized file size 16 MiB. Call get_writing_guide before authoring and complete its agent editorial review (topic=ci) before writing; keep review reports out of content. Omit disclaimers and repetitive liability notices from authored prose; do not restate user responsibility. Write LaTeX formulas as $...$ inline or $$ on separate lines for display math; use get_writing_guide(topic=math) for examples and JSON escaping. Backticks and text/latex fences display source only. Prefer fenced html for diagram creation and revision, converting existing diagrams in the requested editing scope to HTML where practical while preserving their meaning. Self-contained HTML/CSS/JS runs in a sandbox (no external CDN, network or parent access). Fenced mermaid is also supported. html source displays code. Raw HTML outside fences is escaped."
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Latest version returned by the corresponding read or listing tool. Required to detect concurrent changes."
+        }
+      },
+      "required": [
+        "uri",
+        "content",
+        "version"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "delete_document",
+    "description": "Move a Markdown note to its Vault trash using its latest version from read_document or list_documents. Both files of a grouped Chinese/English note are recycled and restored together. Does not permanently delete the files. Recover it with list_trash and restore_trash.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "uri": {
+          "type": "string",
+          "maxLength": 4000,
+          "description": "Document resource URI, e.g. coral://vault/project/docs/design.md. Never a local path."
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Latest version returned by the corresponding read or listing tool. Required to detect concurrent changes."
+        },
+        "note_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Latest note_version from read_document or a note listing. Pass it when moving, renaming or deleting a bilingual note to detect edits to either language."
+        }
+      },
+      "required": [
+        "uri",
+        "version"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "list_trash",
+    "description": "List recycled documents, folders and Vaults, optionally filtered by Vault ID. Returns entry IDs, coral URIs and versions required for restore_trash or restore_vault.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "vault_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]+$",
+          "description": "Vault ID returned by list_vaults."
+        }
+      },
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "restore_trash",
+    "description": "Restore a recycled document or folder to its original location using entry_id and version from list_trash.items. Refuses to overwrite existing content.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "vault_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]+$",
+          "description": "Vault ID returned by list_vaults."
+        },
+        "entry_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Latest version returned by the corresponding read or listing tool. Required to detect concurrent changes."
+        }
+      },
+      "required": [
+        "vault_id",
+        "entry_id",
+        "version"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "restore_vault",
+    "description": "Restore a recycled managed Vault or external registration using its ID and version from list_trash.vaults. Refuses to overwrite an existing managed Vault directory.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "vault_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]+$",
+          "description": "Vault ID returned by list_vaults."
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Latest version returned by the corresponding read or listing tool. Required to detect concurrent changes."
+        }
+      },
+      "required": [
+        "vault_id",
+        "version"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  }
+]

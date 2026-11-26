@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { searchReturn, withSearchReturn } from '../src/web-context.js';
+import { searchReturn, withSearchReturn } from './src/web-context.js';
 
 test('search returns preserve only the scoped query, cursor and result anchor', () => {
   const target = '/search?' + new URLSearchParams({ q: 'KV 带宽', vault: 'research', cursor: '20', ignored: 'value' }) + '#doc-1234567890abcdef';

@@ -150,3 +150,77 @@ test('reading restores an anchor-relative position, honors explicit navigation a
     assert.ok(await page.evaluate(() => window.scrollY < 100));
   } finally { await context.close(); }
 });
+
+const tocFixture = () => `<!doctype html><html><head><meta charset="utf-8"><style>
+  body{margin:0}.topbar{height:40px;position:sticky;top:0;background:white}
+  details{position:fixed;top:50px;left:0;width:210px}.article-toc-scroll{height:120px;overflow:auto}
+  nav a{display:block;height:28px}article{margin-left:230px;padding-top:40px}h2{margin:0;height:40px;scroll-margin-top:56px}
+  section{height:300px}section:last-child{height:100px}
+  </style></head><body><header class="topbar"></header><details open><summary>文章目录</summary>
+  <nav class="article-toc-scroll" data-article-toc>${Array.from({ length: 24 }, (_, i) => `<a href="#${encodeURIComponent('章节-' + i)}">章节 ${i}</a>`).join('')}<a href="#%ZZ">无效目标</a></nav></details>
+  <article data-reading-document="coral://vault/default/toc.md" data-reading-directory="coral://vault/default/">${Array.from({ length: 24 }, (_, i) => `<section><h2 id="章节-${i}">章节 ${i}</h2>正文 ${i}</section>`).join('')}</article></body></html>`;
+
+test('article TOC follows restored reading positions and scrolls its own container without moving the article', { skip: !available, timeout: 30000 }, async () => {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  try {
+    await context.route('http://coral.test/**', route => route.fulfill({ contentType: 'text/html', body: tocFixture() }));
+    const page = await context.newPage();
+    await page.goto('http://coral.test/document?return_to=%2Fsearch%3Fq%3Dtoc');
+    await page.evaluate(() => localStorage.setItem('coral:reading-position:coral://vault/default/toc.md', JSON.stringify({ heading: '章节-16', offset: 0, y: 0 })));
+    await mount(page, false);
+    const active = page.locator('[data-article-toc] [aria-current="location"]');
+    await page.waitForFunction(() => document.querySelector('[data-article-toc] [aria-current]')?.textContent === '章节 16');
+    const restoredY = await page.evaluate(() => scrollY);
+    assert.ok(restoredY > 4000);
+    assert.equal(await active.count(), 1);
+    assert.equal(await active.evaluate(link => {
+      const viewport = link.parentElement!.getBoundingClientRect(), item = link.getBoundingClientRect();
+      return item.top >= viewport.top && item.bottom <= viewport.bottom;
+    }), true);
+    assert.equal(await page.evaluate(() => scrollY), restoredY);
+    await page.evaluate(() => scrollTo(0, 0));
+    await page.waitForFunction(() => document.querySelector('[data-article-toc] [aria-current]')?.textContent === '章节 0');
+    await page.evaluate(() => scrollTo(0, document.documentElement.scrollHeight));
+    await page.waitForFunction(() => document.querySelector('[data-article-toc] [aria-current]')?.textContent === '章节 23');
+    const bottomY = await page.evaluate(() => scrollY);
+    assert.ok(await page.locator('[data-article-toc]').evaluate(nav => nav.scrollTop > 0));
+    await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+    await page.evaluate(() => new Promise(requestAnimationFrame));
+    assert.equal(await page.evaluate(() => scrollY), bottomY);
+
+    const chapter = (number: number) => page.getByRole('link', { name: '章节 ' + number, exact: true });
+    for (const number of [8, 18]) {
+      await chapter(number).focus();
+      await chapter(number).press('Enter');
+      await page.waitForFunction(number => document.querySelector('[data-article-toc] [aria-current]')?.textContent === '章节 ' + number, number);
+      assert.equal(decodeURIComponent(new URL(page.url()).hash), '#章节-' + number);
+      assert.equal(new URL(page.url()).searchParams.get('return_to'), '/search?q=toc');
+    }
+    await page.goBack();
+    await page.waitForFunction(() => document.querySelector('[data-article-toc] [aria-current]')?.textContent === '章节 8');
+    await page.goForward();
+    await page.waitForFunction(() => document.querySelector('[data-article-toc] [aria-current]')?.textContent === '章节 18');
+    await page.setViewportSize({ width: 1280, height: 600 });
+    assert.equal(await active.textContent(), '章节 18');
+  } finally { await context.close(); }
+});
+
+test('article TOC honors explicit hashes and works when reading storage is unavailable', { skip: !available, timeout: 30000 }, async () => {
+  const context = await browser.newContext();
+  try {
+    await context.addInitScript(() => Object.defineProperty(window, 'localStorage', { get() { throw new Error('Storage disabled'); } }));
+    await context.route('http://coral.test/**', route => route.fulfill({ contentType: 'text/html', body: tocFixture() }));
+    const page = await context.newPage();
+    const errors: string[] = [];
+    page.on('pageerror', error => errors.push(error.message));
+    await page.goto('http://coral.test/document?reading=start#' + encodeURIComponent('章节-12'));
+    await mount(page, false);
+    await page.waitForFunction(() => document.querySelector('[data-article-toc] [aria-current]')?.textContent === '章节 12');
+    assert.equal(new URL(page.url()).searchParams.has('reading'), false);
+    assert.equal(decodeURIComponent(new URL(page.url()).hash), '#章节-12');
+    await page.getByRole('link', { name: '章节 3', exact: true }).focus();
+    await page.getByRole('link', { name: '章节 3', exact: true }).press('Enter');
+    await page.waitForFunction(() => document.querySelector('[data-article-toc] [aria-current]')?.textContent === '章节 3');
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+});

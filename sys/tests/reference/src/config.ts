@@ -29,7 +29,7 @@ export function createConfig(input: unknown = {}, base = process.cwd()): Config 
 }
 
 export function loadConfig(): Config {
-  const filename = resolve(process.env.CORAL_CONFIG ?? fileURLToPath(new URL('../config.yaml', import.meta.url)));
+  const filename = resolve(process.env.CORAL_CONFIG ?? fileURLToPath(new URL('../../../config.yaml', import.meta.url)));
   if (process.env.CORAL_CONFIG && !existsSync(filename)) throw new Error('CORAL_CONFIG does not exist');
   const raw: unknown = existsSync(filename) ? parse(readFileSync(filename, 'utf8')) ?? {} : {};
   const config = createConfig(raw, dirname(filename));

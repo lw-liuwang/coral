@@ -5,10 +5,10 @@ import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createConfig } from '../src/config.js';
-import { AppError, resourceUri } from '../src/content.js';
-import { VaultRegistry } from '../src/vault.js';
-import { renderMarkdown, resolveLink, resolveRelativeLink } from '../src/markdown.js';
+import { createConfig } from './src/config.js';
+import { AppError, resourceUri } from './src/content.js';
+import { VaultRegistry } from './src/vault.js';
+import { renderMarkdown, resolveLink, resolveRelativeLink } from './src/markdown.js';
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { while (cleanup.length) cleanup.pop()!(); });

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { cjkSplit, ftsQuery, matchesSearchText, rankSearchDocument, searchMatchRanges, searchSnippet, splitSearchQuery } from '../src/search-query.js';
+import { cjkSplit, ftsQuery, matchesSearchText, rankSearchDocument, searchMatchRanges, searchSnippet, splitSearchQuery } from './src/search-query.js';
 
 test('search groups whitespace while keeping Chinese groups continuous', () => {
   assert.deepEqual(splitSearchQuery('  数据库\t优化\nLayer-Norm  '), ['数据库', '优化', 'Layer-Norm']);

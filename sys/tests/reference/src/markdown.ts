@@ -1,4 +1,5 @@
 import MarkdownIt from 'markdown-it';
+import type Token from 'markdown-it/lib/token.mjs';
 import hljs from 'highlight.js';
 import { posix, extname } from 'node:path';
 import { decodedPathCandidates, resourceUri, safeParts } from './content.js';
@@ -91,7 +92,20 @@ export function wikiTargets(body: string): string[] {
   return result;
 }
 
+export interface RenderedHeading { id: string; title: string; level: number }
+
+function headingText(tokens: Token[]): string {
+  return tokens.map(token => token.type === 'image' ? headingText(token.children ?? [])
+    : ['text', 'code_inline', 'math_inline'].includes(token.type) ? token.content
+    : ['softbreak', 'hardbreak'].includes(token.type) ? ' ' : '').join('');
+}
+
 export function renderMarkdown(body: string, documents: Document[], current?: Document, styleNonce?: string, metadata: Record<string, unknown> | undefined = current?.metadata): string {
+  return renderMarkdownWithOutline(body, documents, current, styleNonce, metadata).html;
+}
+
+export function renderMarkdownWithOutline(body: string, documents: Document[], current?: Document, styleNonce?: string, metadata: Record<string, unknown> | undefined = current?.metadata) {
+  const headings: RenderedHeading[] = [];
   const md = new MarkdownIt({ html: false, linkify: true, typographer: false,
     highlight(code, language) {
       if (language && hljs.getLanguage(language)) return hljs.highlight(code, { language }).value;
@@ -134,7 +148,8 @@ export function renderMarkdown(body: string, documents: Document[], current?: Do
     state.pos += scanned.length;
     return true;
   });
-  const usedIds = new Map<string, number>();
+  const usedIds = new Set<string>();
+  const nextHeadingSuffix = new Map<string, number>();
   const originalFence = md.renderer.rules.fence!;
   md.renderer.rules.fence = (tokens, idx, options, env, self) => {
     const [language, mode] = tokens[idx].info.trim().toLowerCase().split(/\s+/);
@@ -147,10 +162,15 @@ export function renderMarkdown(body: string, documents: Document[], current?: Do
     return originalFence(tokens, idx, options, env, self);
   };
   md.renderer.rules.heading_open = (tokens, idx, options, _env, self) => {
-    const base = headingId(tokens[idx + 1]?.content ?? '');
-    const count = usedIds.get(base) ?? 0;
-    usedIds.set(base, count + 1);
-    tokens[idx].attrSet('id', base + (count ? '-' + count : ''));
+    const base = headingId(tokens[idx + 1]?.content ?? '') || 'section';
+    let id = base;
+    let suffix = nextHeadingSuffix.get(base) ?? 1;
+    while (usedIds.has(id)) id = base + '-' + suffix++;
+    nextHeadingSuffix.set(base, suffix);
+    usedIds.add(id);
+    tokens[idx].attrSet('id', id);
+    const title = headingText(tokens[idx + 1]?.children ?? []);
+    headings.push({ id, title: title.trim() || tokens[idx + 1]?.content || '章节', level: Number(tokens[idx].tag.slice(1)) });
     return self.renderToken(tokens, idx, options);
   };
   md.inline.ruler.before('link', 'wikilink', (state, silent) => {
@@ -213,5 +233,5 @@ export function renderMarkdown(body: string, documents: Document[], current?: Do
     return originalImage(tokens, idx, options, env, self);
   };
   const html = md.render(body);
-  return html + mathStyles();
+  return { html: html + mathStyles(), headings };
 }

@@ -1,6 +1,6 @@
 {
   "name": "coral",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "A Markdown knowledge base, Obsidian Vault browser and read-write MCP server",
@@ -8,16 +8,17 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "dev": "npm run build && tsx watch src/server.ts",
-    "build": "tsc && esbuild src/client.ts src/mermaid-frame.ts src/html-frame.ts src/html-runtime.ts --bundle --minify --outdir=dist/public",
-    "start": "node dist/server.js",
-    "mcp": "tsx src/stdio.ts",
-    "mcp:prod": "node dist/stdio.js",
+    "dev": "npm run build && node scripts/run.mjs",
+    "build": "tsc --noEmit && npm run build:assets && node scripts/go.mjs build",
+    "build:assets": "node scripts/build-assets.mjs",
+    "start": "node scripts/run.mjs",
+    "mcp": "node scripts/run.mjs --stdio",
+    "mcp:prod": "node scripts/run.mjs --stdio",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/*.test.ts",
+    "test": "npm run build && node scripts/go.mjs test ./... && tsx --test tests/*.test.ts tests/reference/*.test.ts",
     "test:browser": "npm run build && playwright test"
   },
-  "dependencies": {
+  "devDependencies": {
     "@codemirror/autocomplete": "^6.20.3",
     "@codemirror/commands": "^6.11.1",
     "@codemirror/lang-markdown": "^6.5.2",
@@ -30,14 +31,13 @@
     "@modelcontextprotocol/sdk": "^1.28.0",
     "express": "^5.1.0",
     "highlight.js": "^11.11.1",
+    "katex": "0.16.47",
     "lucide": "^0.468.0",
     "markdown-it": "^14.3.3",
     "mermaid": "^12.2.0",
     "multer": "^2.0.2",
     "yaml": "^2.8.1",
-    "zod": "^3.25.76"
-  },
-  "devDependencies": {
+    "zod": "^3.25.76",
     "@playwright/test": "^1.56.0",
     "@types/express": "^5.0.3",
     "@types/markdown-it": "^14.1.2",

@@ -8,21 +8,26 @@ import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { searchKeymap, highlightSelectionMatches } from '@codemirror/search';
 import { renderDiagrams } from './diagrams.js';
 import { renderHtmlBlocks } from './html.js';
+import { renderMath } from './math-client.js';
 
-interface Draft { content: string; title: string; directory: string; version: string; updated: number }
+interface Draft { content: string; title: string; directory: string; version: string; updated: number; language?: string; sourceLanguage?: string }
 
 export function mountEditor() {
-  const textarea = document.querySelector<HTMLTextAreaElement>('#editor');
+  const fallbackTextarea = document.querySelector<HTMLTextAreaElement>('#editor');
   const host = document.querySelector<HTMLElement>('#markdown-editor');
   const surface = document.querySelector<HTMLElement>('.writing-surface');
   const preview = document.querySelector<HTMLElement>('#preview');
-  if (!textarea || !host || !surface || !preview || !textarea.form) return;
-  const form = textarea.form;
+  if (!fallbackTextarea || !host || !surface || !preview || !fallbackTextarea.form) return;
+  const form = fallbackTextarea.form;
+  let textarea: HTMLTextAreaElement | HTMLInputElement = fallbackTextarea;
   const title = form.querySelector<HTMLInputElement>('[name="title"]');
   const directory = form.querySelector<HTMLInputElement>('[name="directory"]');
   const version = form.querySelector<HTMLInputElement>('[name="version"]');
+  const language = form.querySelector<HTMLInputElement | HTMLSelectElement>('[name="language"]');
+  const sourceLanguage = form.querySelector<HTMLInputElement | HTMLSelectElement>('[name="source_language"]');
   const vault = document.querySelector<HTMLInputElement>('#preview-vault')!.value;
   const uri = document.querySelector<HTMLInputElement>('#preview-uri')?.value;
+  const previewContextUri = document.querySelector<HTMLInputElement>('#preview-context-uri')?.value;
   const draftUrl = new URL(location.href);
   if (!uri && !/^[A-Za-z0-9_-]{8,100}$/.test(draftUrl.searchParams.get('draft') ?? '')) {
     const draftId = typeof crypto.randomUUID === 'function' ? crypto.randomUUID()
@@ -31,7 +36,7 @@ export function mountEditor() {
     window.history.replaceState(window.history.state, '', draftUrl);
   }
   const draftKey = `coral:draft:${uri ?? `new:${vault}:${draftUrl.searchParams.get('draft')}`}`;
-  const legacyDraftKey = !uri ? `coral:draft:new:${vault}` : undefined;
+  const legacyDraftKey = !uri && !previewContextUri ? `coral:draft:new:${vault}` : undefined;
   const status = document.querySelector<HTMLElement>('#save-status')!;
   const count = document.querySelector<HTMLElement>('#word-count')!;
   const errorBox = document.querySelector<HTMLElement>('#save-error')!;
@@ -44,9 +49,14 @@ export function mountEditor() {
   let previewTimer: ReturnType<typeof setTimeout> | undefined;
   let draftTimer: ReturnType<typeof setTimeout>;
   let controller: AbortController | undefined;
-  const snapshot = (): Draft => ({ content: textarea.value, title: title?.value ?? '', directory: directory?.value ?? '', version: version?.value ?? '', updated: Date.now() });
-  const fingerprint = (draft: Draft) => JSON.stringify([draft.content, draft.title, draft.directory]);
-  let baseline = fingerprint(snapshot());
+  const snapshot = (): Draft => ({ content: textarea.value, title: title?.value ?? '', directory: directory?.value ?? '', version: version?.value ?? '', updated: Date.now(), language: language?.value, sourceLanguage: sourceLanguage?.value });
+  const fingerprint = (draft: Draft) => JSON.stringify([draft.content, draft.title, draft.directory, draft.language ?? '', draft.sourceLanguage ?? '']);
+  const defaultLanguage = (field: HTMLInputElement | HTMLSelectElement | null) => field instanceof HTMLSelectElement
+    ? Array.from(field.options).find(option => option.defaultSelected)?.value ?? field.options[0]?.value
+    : field?.defaultValue;
+  let baseline = fingerprint({ ...snapshot(), content: fallbackTextarea.defaultValue,
+    title: title?.defaultValue ?? '', directory: directory?.defaultValue ?? '',
+    language: defaultLanguage(language), sourceLanguage: defaultLanguage(sourceLanguage) });
   const dirty = () => fingerprint(snapshot()) !== baseline;
   let pendingDraft: Draft | undefined;
   let pendingDraftKey = draftKey;
@@ -69,11 +79,12 @@ export function mountEditor() {
     controller = request;
     try {
       const response = await fetch('/api/preview', { method: 'POST', signal: request.signal,
-        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ markdown: textarea!.value, vault, uri }) });
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ markdown: textarea!.value, vault, uri, context_uri: previewContextUri }) });
       const data = await response.json();
       if (request.signal.aborted) return;
       if (response.ok) {
         preview!.innerHTML = data.html;
+        renderMath(preview!);
         renderDiagrams(preview!);
         renderHtmlBlocks(preview!);
       }
@@ -147,10 +158,18 @@ export function mountEditor() {
     ]),
     EditorView.updateListener.of(update => { if (update.docChanged) { textarea!.value = update.state.doc.toString(); changed(); } }),
   ] }) });
-  textarea.hidden = true;
+  const submittedContent = document.createElement('input');
+  submittedContent.type = 'hidden';
+  submittedContent.id = 'editor';
+  submittedContent.name = 'content';
+  submittedContent.value = textarea.value;
+  textarea.replaceWith(submittedContent);
+  textarea = submittedContent;
   document.body.classList.add('writing-page');
   title?.addEventListener('input', changed);
   directory?.addEventListener('input', changed);
+  language?.addEventListener('change', changed);
+  sourceLanguage?.addEventListener('change', changed);
   surface.querySelectorAll<HTMLButtonElement>('[data-editor-command]').forEach(button => {
     button.addEventListener('mousedown', event => event.preventDefault());
     button.addEventListener('click', () => commands[button.dataset.editorCommand!]?.());
@@ -180,6 +199,8 @@ export function mountEditor() {
     const draft = pendingDraft;
     if (title) title.value = draft.title;
     if (directory) directory.value = draft.directory;
+    if (language && (draft.language === 'zh' || draft.language === 'en')) language.value = draft.language;
+    if (sourceLanguage && (draft.sourceLanguage === 'zh' || draft.sourceLanguage === 'en')) sourceLanguage.value = draft.sourceLanguage;
     // Keep the original version so restoring an old draft never overwrites external edits.
     if (version) version.value = draft.version;
     view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: draft.content } });
@@ -246,6 +267,7 @@ export function mountEditor() {
       errorBox.hidden = false;
     } finally { saving = false; saveButton.disabled = false; form.inert = false; }
   });
+  surface.querySelectorAll<HTMLButtonElement>('.writing-toolbar button[disabled]').forEach(button => { button.disabled = false; });
   changed();
   // Initial rendering is immediate; a second render would reset interactive embeds.
   clearTimeout(previewTimer);

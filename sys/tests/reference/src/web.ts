@@ -10,14 +10,19 @@ import { AppError, hasFrontmatter, parseMarkdown, safeParts, titleFor } from './
 import { createMcpServer } from './mcp.js';
 import { renderMarkdown, viewUrl } from './markdown.js';
 import { katexAssetDirectory } from './math.js';
-import { MAX_FILE_BYTES, VaultRegistry, type RelocationReport } from './vault.js';
-import { documentAnchor, documentPage, editPage, editorStyleNonce, errorPage, home, lintPage, movePage, newDirectory, newPage, newVault, renamePage, searchPage, trashPage, vaultCatalog } from './views.js';
+import { MAX_FILE_BYTES, VaultRegistry, type DocumentLanguage, type RelocationReport } from './vault.js';
+import { documentAnchor, documentPage, editPage, editorStyleNonce, errorPage, home, lintPage, movePage, newDirectory, newLanguagePage, newPage, newVault, renamePage, searchPage, trashPage, vaultCatalog } from './views.js';
 import { searchReturn, withSearchReturn } from './web-context.js';
 
-const base = resolve(fileURLToPath(new URL('..', import.meta.url)));
+const base = resolve(fileURLToPath(new URL('../../..', import.meta.url)));
 const text = (value: unknown, fallback = '') => typeof value === 'string' ? value : fallback;
 const integer = (value: unknown, fallback = 0) => value === undefined ? fallback : z.coerce.number().int().min(0).parse(value);
 const uri = (request: Request) => text(request.query.uri ?? request.body?.uri);
+const documentLanguage = (value: unknown, fallback: DocumentLanguage): DocumentLanguage => {
+  const language = text(value, fallback);
+  if (language !== 'zh' && language !== 'en') throw new AppError('语言仅支持中文或英文');
+  return language;
+};
 
 export function createApp(config: Config) {
   const app = express();
@@ -63,7 +68,7 @@ export function createApp(config: Config) {
     res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; frame-src 'none'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'; sandbox allow-scripts");
     res.sendFile(join(base, 'static/html-frame.html'));
   });
-  app.use('/static', express.static(join(base, 'dist/public')));
+  app.use('/static', express.static(join(base, 'internal/assets/web')));
   app.get('/static/highlight.css', (_req, res) => res.sendFile(join(base, 'node_modules/highlight.js/styles/github.css')));
   app.use('/static/katex', express.static(katexAssetDirectory));
   app.use('/static', express.static(join(base, 'static')));
@@ -152,12 +157,40 @@ export function createApp(config: Config) {
     const doc = registry.document(uri(req));
     res.send(documentPage(registry, doc, { returnTo: searchReturn(req.query.return_to), operation: operationReport(doc.vaultId, req.query.operation) }));
   });
+  app.get('/languages/new', (req, res) => {
+    const doc = registry.document(uri(req));
+    const note = registry.noteLanguages(doc.uri);
+    const sourceLanguage = note.versions.find(item => item.document.uri === doc.uri)!.language;
+    const language = documentLanguage(req.query.language, sourceLanguage === 'zh' ? 'en' : 'zh');
+    const returnTo = searchReturn(req.query.return_to);
+    const existing = note.versions.find(item => item.language === language)?.document;
+    if (existing) { res.redirect(303, withSearchReturn(viewUrl(existing.uri), returnTo)); return; }
+    res.send(newLanguagePage(registry, doc, language, { sourceLanguage, returnTo }));
+  });
+  app.post('/languages/new', (req, res) => {
+    const doc = registry.document(uri(req));
+    const note = registry.noteLanguages(doc.uri);
+    const sourceLanguage = documentLanguage(req.body.source_language, note.versions.find(item => item.document.uri === doc.uri)!.language);
+    const language = documentLanguage(req.body.language, sourceLanguage === 'zh' ? 'en' : 'zh');
+    const fields = { title: text(req.body.title), content: text(req.body.content), version: text(req.body.version), sourceLanguage, returnTo: searchReturn(req.body.return_to) };
+    try {
+      if (!fields.version) throw new AppError('缺少文档版本，请重新打开添加语言版本页面');
+      const created = registry.createLanguageVersion(doc.uri, language, fields.content, fields.version, { title: fields.title, sourceLanguage });
+      const url = withSearchReturn(viewUrl(created.uri), fields.returnTo);
+      if (req.get('accept') === 'application/json') { res.json({ uri: created.uri, version: created.version, url }); return; }
+      res.redirect(303, url);
+    } catch (error) {
+      if (!(error instanceof AppError)) throw error;
+      if (req.get('accept') === 'application/json') { res.status(error.status).json({ error: error.message, ...error.details }); return; }
+      res.status(error.status).send(newLanguagePage(registry, doc, language, { ...fields, error: error.message, conflict: error.status === 409 }));
+    }
+  });
   app.get('/rename', (req, res) => res.send(renamePage(registry, registry.renameEntry(uri(req)), { from: text(req.query.from), returnTo: searchReturn(req.query.return_to) })));
   app.post('/rename', (req, res) => {
     const entry = registry.renameEntry(uri(req));
-    const fields = { name: text(req.body.name), version: text(req.body.version), from: text(req.body.from), returnTo: searchReturn(req.body.return_to) };
+    const fields = { name: text(req.body.name), version: text(req.body.version), noteVersion: text(req.body.note_version) || undefined, from: text(req.body.from), returnTo: searchReturn(req.body.return_to) };
     try {
-      const renamed = registry.rename(entry.uri, fields.name, fields.version, { updateLinks: true });
+      const renamed = registry.rename(entry.uri, fields.name, fields.version, { updateLinks: true, noteVersion: fields.noteVersion });
       const directory = fields.from === 'directory' && renamed.kind === 'directory' ? renamed.relative : renamed.relative.split('/').slice(0, -1).join('/');
       const url = operationUrl(fields.from === 'document' && renamed.kind === 'document' ? withSearchReturn(viewUrl(renamed.uri), relocatedReturn(fields.returnTo, entry.uri, renamed.uri))
         : '/?' + new URLSearchParams({ vault: renamed.vaultId, directory }) + (fields.from === 'directory' ? '' : '#' + documentAnchor(renamed.uri)), renamed);
@@ -173,9 +206,9 @@ export function createApp(config: Config) {
   app.get('/move', (req, res) => res.send(movePage(registry, registry.document(uri(req)), { from: text(req.query.from), returnTo: searchReturn(req.query.return_to) })));
   app.post('/move', (req, res) => {
     const doc = registry.document(uri(req));
-    const fields = { directory: text(req.body.directory), version: text(req.body.version), from: text(req.body.from), returnTo: searchReturn(req.body.return_to) };
+    const fields = { directory: text(req.body.directory), version: text(req.body.version), noteVersion: text(req.body.note_version) || undefined, from: text(req.body.from), returnTo: searchReturn(req.body.return_to) };
     try {
-      const moved = registry.moveDocument(doc.uri, fields.directory, fields.version, { updateLinks: true });
+      const moved = registry.moveDocument(doc.uri, fields.directory, fields.version, { updateLinks: true, noteVersion: fields.noteVersion });
       const url = operationUrl(fields.from === 'document' ? withSearchReturn(viewUrl(moved.uri), relocatedReturn(fields.returnTo, doc.uri, moved.uri))
         : '/?' + new URLSearchParams({ vault: moved.vaultId, directory: fields.directory }) + '#' + documentAnchor(moved.uri), moved);
       if (req.get('accept') === 'application/json') { res.json({ uri: moved.uri, version: moved.version, updated_documents: moved.updated_documents, unresolved_links: moved.unresolved_links, operation_id: moved.operation_id, url }); return; }
@@ -206,7 +239,7 @@ export function createApp(config: Config) {
   app.post('/delete', (req, res) => {
     if (!text(req.body.version)) throw new AppError('缺少文档版本，请刷新后重试');
     const doc = registry.document(uri(req));
-    registry.delete(doc.uri, text(req.body.version));
+    registry.delete(doc.uri, text(req.body.version), { noteVersion: text(req.body.note_version) || undefined });
     res.redirect(303, '/?' + new URLSearchParams({ vault: doc.vaultId, directory: doc.relative.split('/').slice(0, -1).join('/'), deleted: '1' }));
   });
   app.post('/delete-directory', (req, res) => {
@@ -218,10 +251,12 @@ export function createApp(config: Config) {
   app.post('/api/preview', (req, res) => {
     const vaultId = text(req.body.vault, 'default');
     const documents = registry.scan(vaultId).documents;
-    const current = text(req.body.uri) ? registry.document(text(req.body.uri)) : undefined;
+    const documentUri = text(req.body.uri);
+    const contextUri = documentUri || text(req.body.context_uri);
+    const current = contextUri ? registry.document(contextUri) : undefined;
     const raw = text(req.body.markdown);
     const parsed = parseMarkdown(raw);
-    const metadata = hasFrontmatter(raw) ? parsed.metadata : current?.metadata;
+    const metadata = hasFrontmatter(raw) ? parsed.metadata : documentUri ? current?.metadata : {};
     res.json({ html: renderMarkdown(parsed.body, documents, current, editorStyleNonce, metadata) });
   });
   app.get('/api/vaults', (_req, res) => res.json(registry.listVaults()));

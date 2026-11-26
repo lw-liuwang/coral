@@ -18,9 +18,17 @@ if not "%coral_exit_code%"=="0" (
 exit /b %coral_exit_code%
 
 :run
+if exist "dist\coral.exe" goto start
+
+where go >nul 2>&1
+if errorlevel 1 if not defined CORAL_GO (
+  echo [coral] Build requires Go 1.26+. Install Go from https://go.dev/dl/ or use a prebuilt coral.exe.
+  exit /b 1
+)
+
 where node >nul 2>&1
 if errorlevel 1 (
-  echo [coral] Node.js 22.13+ and npm are required. Install Node.js 24 LTS from https://nodejs.org/ and reopen this script.
+  echo [coral] Building web assets requires Node.js 22.13+ and npm. The built server runs without Node.js.
   exit /b 1
 )
 where npm.cmd >nul 2>&1
@@ -44,6 +52,7 @@ echo [coral] Building...
 call npm.cmd run build
 if errorlevel 1 exit /b %errorlevel%
 
-echo [coral] Starting server. Press Ctrl+C to stop.
-node dist/server.js
+:start
+echo [coral] Starting Go server. Press Ctrl+C to stop.
+dist\coral.exe
 exit /b %errorlevel%

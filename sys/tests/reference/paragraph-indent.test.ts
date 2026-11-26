@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createConfig } from '../src/config.js';
-import { createApp } from '../src/web.js';
-import { hasFrontmatter } from '../src/content.js';
-import { renderMarkdown } from '../src/markdown.js';
+import { createConfig } from './src/config.js';
+import { createApp } from './src/web.js';
+import { hasFrontmatter } from './src/content.js';
+import { renderMarkdown } from './src/markdown.js';
 
 test('paragraph indentation recognizes narrative and numbered captions without altering Markdown content', () => {
   const prose = '# 标题\n\n标题后的正文。\n\n' +

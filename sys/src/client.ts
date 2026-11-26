@@ -3,6 +3,7 @@ import { mountEditor } from './editor.js';
 import { renderDiagrams } from './diagrams.js';
 import { renderHtmlBlocks } from './html.js';
 import { mountReading } from './reading.js';
+import { renderMath } from './math-client.js';
 
 const icons = { Library, Search, FilePlus, FolderPlus, Upload, Save, ArrowLeft, Pencil, Download, Trash2, Copy, Folder, FolderOpen, FolderInput, FileText, CornerLeftUp, ChevronLeft, ChevronRight, Check, Undo2, Redo2, Heading2, Bold, Italic, Link, List, ListTodo, Quote, Code, Maximize2, Ellipsis, ScanSearch, RotateCcw, RefreshCw, TextCursorInput };
 createIcons({ icons });
@@ -43,6 +44,7 @@ document.querySelectorAll<HTMLButtonElement>('[data-copy]').forEach(button => bu
 }));
 
 mountEditor();
+renderMath();
 mountReading();
 renderDiagrams();
 renderHtmlBlocks();

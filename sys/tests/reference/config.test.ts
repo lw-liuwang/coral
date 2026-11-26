@@ -5,8 +5,8 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const configModule = new URL('../src/config.ts', import.meta.url).href;
-const loader = new URL('../node_modules/tsx/dist/loader.mjs', import.meta.url).href;
+const configModule = new URL('./src/config.ts', import.meta.url).href;
+const loader = new URL('../../node_modules/tsx/dist/loader.mjs', import.meta.url).href;
 
 function readConfig(cwd: string, overrides: Record<string, string> = {}) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('CORAL_')));

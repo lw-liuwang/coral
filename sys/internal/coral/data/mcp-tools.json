@@ -266,6 +266,12 @@
           "minLength": 1,
           "maxLength": 64
         },
+        "display_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Optional human-readable Vault name, including Chinese. Does not change the stable ID or directory derived from name."
+        },
         "description": {
           "type": "string",
           "maxLength": 2000,

@@ -45,6 +45,9 @@ func alert(message string) string {
 func hidden(name, value string) string {
 	return `<input type="hidden" name="` + name + `" value="` + escape(value) + `">`
 }
+func drawerButton(name, label, id string) string {
+	return `<button type="button" data-drawer-toggle="` + name + `" aria-label="收起` + label + `" title="收起` + label + `" aria-controls="` + id + `" aria-expanded="true">` + label + `</button>`
+}
 func directoryURL(vault, dir string) string {
 	return "/?" + url.Values{"vault": {vault}, "directory": {dir}}.Encode()
 }
@@ -61,6 +64,8 @@ type pageOptions struct {
 	HasDirectory, SearchScope                   bool
 	DocumentCount                               *int
 	Outline                                     []RenderedHeading
+	Notes                                       []Document
+	CurrentNote, ReturnTo                       string
 }
 
 func (r *Registry) layout(title, content, nonce string, o pageOptions) (string, error) {
@@ -108,7 +113,7 @@ func (r *Registry) layout(title, content, nonce string, o pageOptions) (string, 
 	if o.VaultID != "" {
 		trashURL += "?vault=" + encodeURI(o.VaultID)
 	}
-	sidebar := `<aside class="sidebar" aria-label="知识库导航"><a class="brand" href="/" aria-label="coral · 全部知识库">` + icon("library") + ` coral</a>` + search.String() + menu("切换知识库", vaultLinks, name, "library") + `<div class="sidebar-scroll">` + tree + `</div><a class="sidebar-trash" href="` + escape(trashURL) + `">` + icon("trash-2") + `回收站</a></aside>`
+	sidebar := `<aside class="sidebar" id="folder-drawer" data-drawer="folders" aria-label="知识库导航"><a class="brand" href="/" aria-label="coral · 全部知识库">` + icon("library") + ` coral</a>` + search.String() + menu("切换知识库", vaultLinks, name, "library") + `<div class="sidebar-scroll">` + tree + `</div><a class="sidebar-trash" href="` + escape(trashURL) + `">` + icon("trash-2") + `回收站</a></aside>`
 	crumbs := ""
 	if o.VaultID != "" {
 		type crumb struct{ label, href string }
@@ -141,10 +146,37 @@ func (r *Registry) layout(title, content, nonce string, o pageOptions) (string, 
 		crumbs += `</nav>`
 	}
 	outline := ""
+	noteList := ""
 	class := "app-shell"
-	if len(o.Outline) > 0 {
+	if o.Notes != nil {
+		class += " has-note-list"
+		var links strings.Builder
+		links.WriteString(`<aside class="reading-notes" id="note-drawer" data-drawer="notes" aria-label="笔记导航"><nav class="note-list-scroll" aria-label="当前文件夹笔记"><ul>`)
+		titles := map[string]int{}
+		for _, d := range o.Notes {
+			titles[d.Title]++
+		}
+		for _, d := range o.Notes {
+			current := ""
+			label := "打开笔记：" + d.Title
+			if titles[d.Title] > 1 {
+				label += "（" + path.Base(d.Relative) + "）"
+			}
+			if d.URI == o.CurrentNote {
+				current = ` aria-current="page"`
+			}
+			links.WriteString(`<li><a href="` + escape(withReturn(viewURL(d.URI), o.ReturnTo)) + `" aria-label="` + escape(label) + `" title="` + escape(path.Base(d.Relative)) + `"` + current + `><span>` + escape(d.Title) + `</span>`)
+			if titles[d.Title] > 1 {
+				links.WriteString(`<small>` + escape(path.Base(d.Relative)) + `</small>`)
+			}
+			links.WriteString(`</a></li>`)
+		}
+		links.WriteString(`</ul></nav></aside>`)
+		noteList = links.String()
+	}
+	if len(o.Outline) > 0 || o.Notes != nil {
 		class += " has-article-outline"
-		outline = `<aside class="reading-outline" aria-label="文章导航"><details class="article-outline" open><summary>文章目录</summary><nav class="article-toc-scroll" data-article-toc aria-label="文章目录"><ol>`
+		outline = `<aside class="reading-outline" id="chapter-drawer" data-drawer="chapters" aria-label="文章导航"><nav class="article-toc-scroll" data-article-toc aria-label="文章目录"><ol>`
 		levels := []int{}
 		for _, h := range o.Outline {
 			for len(levels) > 0 && levels[len(levels)-1] >= h.Level {
@@ -153,15 +185,26 @@ func (r *Registry) layout(title, content, nonce string, o pageOptions) (string, 
 			outline += fmt.Sprintf(`<li class="toc-depth-%d"><a href="#%s">%s</a></li>`, len(levels), escape(encodeURI(h.ID)), escape(h.Title))
 			levels = append(levels, h.Level)
 		}
-		outline += `</ol></nav></details></aside>`
+		outline += `</ol></nav></aside>`
 	}
-	header := crumbs + o.Header
+	controls := drawerButton("folders", "目录", "folder-drawer")
+	if noteList != "" {
+		controls += drawerButton("notes", "笔记", "note-drawer")
+	}
+	if outline != "" {
+		controls += drawerButton("chapters", "章节", "chapter-drawer")
+	}
+	navigation := `<div class="drawer-controls" role="group" aria-label="侧栏" hidden>` + controls + `</div>`
+	header := `<div class="workspace-header">` + navigation + `<div class="header-content">` + crumbs + `</div></div>` + o.Header
+	if crumbs == "" {
+		header = `<div class="workspace-header">` + navigation + `<div class="header-content">` + o.Header + `</div></div>`
+	}
 	topClass := "topbar"
 	if o.DocumentCount != nil {
 		header = `<div class="page-head">` + header + `</div>`
 		topClass += " directory-header"
 	}
-	return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="editor-style-nonce" content="` + escape(nonce) + `"><title>` + escape(title) + ` · coral</title><link rel="stylesheet" href="/static/coral.css"><link rel="stylesheet" href="/static/highlight.css"><link rel="stylesheet" href="/static/katex/katex.min.css"></head><body class="` + class + `">` + sidebar + outline + `<main class="workspace"><header class="` + topClass + `">` + header + `</header><div class="page-content">` + content + `</div></main><script src="/static/client.js" defer></script></body></html>`, nil
+	return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="editor-style-nonce" content="` + escape(nonce) + `"><title>` + escape(title) + ` · coral</title><script src="/static/drawers.js"></script><link rel="stylesheet" href="/static/coral.css"><link rel="stylesheet" href="/static/highlight.css"><link rel="stylesheet" href="/static/katex/katex.min.css"></head><body class="` + class + `">` + sidebar + noteList + outline + `<main class="workspace"><header class="` + topClass + `">` + header + `</header><div class="page-content">` + content + `</div></main><script type="module" src="/static/client.js"></script></body></html>`, nil
 }
 func (r *Registry) folderTree(id, dir string) (string, error) {
 	dirs, err := r.Directories(id)
@@ -207,7 +250,7 @@ func (r *Registry) folderTree(id, dir string) (string, error) {
 	}
 	return out + `</ul></nav>`, nil
 }
-func (r *Registry) catalog(nonce string, trashed bool) (string, error) {
+func (r *Registry) catalog(nonce string, trashed bool, result ...string) (string, error) {
 	listing, err := r.ListVaults()
 	if err != nil {
 		return "", err
@@ -215,6 +258,9 @@ func (r *Registry) catalog(nonce string, trashed bool) (string, error) {
 	vaults := listing["vaults"].([]any)
 	header := fmt.Sprintf(`<div class="page-head"><h1>知识库 <span class="muted">%d 个</span></h1><div class="btns">`, len(vaults)) + button("/", "刷新知识库", "refresh-cw", false) + button("/vaults/new", "创建知识库", "folder-plus", true) + `</div></div>`
 	content := `<ul class="vault-list">`
+	if len(result) > 0 {
+		content = r.webResultNotice(result[0]) + content
+	}
 	if trashed {
 		content = `<div class="alert ok" role="status">知识库已移入回收站。</div>` + content
 	}
@@ -231,11 +277,16 @@ func (r *Registry) catalog(nonce string, trashed bool) (string, error) {
 		if description := stringValue(v["description"]); description != "" {
 			content += `<p>` + escape(description) + `</p>`
 		}
-		content += `</div><span class="muted">` + count + `</span><div class="row-actions">` + copyButton(stringValue(v["uri"]), "复制 Coral 链接："+name)
+		content += `</div><span class="muted">` + count + `</span><div class="row-actions">`
+		actions := copyButton(stringValue(v["uri"]), "复制 Coral 链接："+name)
 		if v["available"] == true || v["external"] == true {
-			content += `<form action="/vaults/delete" method="post" data-confirm="将知识库「` + escape(name) + `」移入回收站？外部知识库仅回收注册记录，原文件保留。">` + hidden("vault", stringValue(v["id"])) + hidden("version", stringValue(v["version"])) + `<button class="btn danger" aria-label="删除知识库：` + escape(name) + `">` + icon("trash-2") + `<span>删除</span></button></form>`
+			message := "将知识库「" + name + "」及全部内容移入回收站？"
+			if v["external"] == true {
+				message = "移除外部知识库「" + name + "」的注册？原文件保留。"
+			}
+			actions += `<form action="/vaults/delete" method="post" data-confirm="` + escape(message) + `">` + hidden("vault", stringValue(v["id"])) + hidden("version", stringValue(v["version"])) + `<button class="btn danger" aria-label="删除知识库：` + escape(name) + `">` + icon("trash-2") + `<span>删除</span></button></form>`
 		}
-		content += `</div></li>`
+		content += menu("知识库操作："+name, actions, "", "") + `</div></li>`
 	}
 	return r.layout("知识库", content+`</ul>`, nonce, pageOptions{Header: header})
 }
@@ -248,7 +299,7 @@ func (r *Registry) home(id, dir, nonce string, q url.Values) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	content := operationNotice(r.optionalReport(id, q.Get("operation"))) + `<section class="reading-resume" data-reading-resume hidden aria-label="阅读进度"><div><a data-resume-title></a></div><div class="btns"><a class="btn" data-resume-open>继续阅读</a><a class="btn primary" data-resume-next>下一篇</a></div></section>`
+	content := r.webResultNotice(q.Get("result")) + operationNotice(r.optionalReport(id, q.Get("operation"))) + `<section data-directory-drafts data-vault="` + escape(id) + `" data-directory="` + escape(dir) + `" hidden></section><section class="reading-resume" data-reading-resume hidden aria-label="阅读进度"><div><a data-resume-title></a></div><div class="btns"><a class="btn" data-resume-open>继续阅读</a><a class="btn primary" data-resume-next>下一篇</a></div></section>`
 	if q.Get("deleted") == "1" {
 		content += `<div class="alert ok" role="status">已移入知识库回收站。</div>`
 	}
@@ -356,7 +407,7 @@ func (r *Registry) documentPage(d Document, nonce, returnTo, op string) (string,
 	if err != nil {
 		return "", err
 	}
-	rendered, err := RenderMarkdown(d.Body, scan.Documents, &d, d.Metadata)
+	rendered, err := RenderMarkdown(d.Body, scan.Documents, &d, d.Metadata, scan.index.links)
 	if err != nil {
 		return "", err
 	}
@@ -381,20 +432,28 @@ func (r *Registry) documentPage(d Document, nonce, returnTo, op string) (string,
 		otherLabel = "中文"
 		buttonLabel = "中文"
 	}
-	languageLink := button(withReturn("/languages/new?"+url.Values{"uri": {d.URI}, "language": {other}}.Encode(), returnTo), "添加"+otherLabel+"版", "", false)
+	addLanguage := button(withReturn("/languages/new?"+url.Values{"uri": {d.URI}, "language": {other}}.Encode(), returnTo), "添加"+otherLabel+"版", "", false)
+	if !f.Grouped {
+		addLanguage = button(withReturn("/languages/new?"+url.Values{"uri": {d.URI}}.Encode(), returnTo), "添加语言版本", "", false)
+	}
+	languageLink := ""
 	for _, version := range f.Versions {
 		if docLanguage(version) == other {
 			languageLink = `<a class="btn" href="` + escape(withReturn(viewURL(version.URI), returnTo)) + `" aria-label="切换到` + otherLabel + `"><span lang="` + other + `">` + buttonLabel + `</span></a>`
 		}
 	}
 	returnURL := directoryURL(d.VaultID, dir) + "#" + documentAnchor(f.Primary.URI)
-	actions := copyButton(d.URI, "") + actionLink("rename", f.Primary.URI, "重命名", "document", returnTo) + actionLink("move", f.Primary.URI, "移动", "document", returnTo) + button("/download?uri="+encodeURI(d.URI), "下载", "download", false) + deleteForm("/delete", f.Primary.URI, f.Primary.Version, f.Signature, "将这篇笔记的全部语言版本移入知识库回收站？", "删除")
+	actions := button(returnURL, "所在目录", "folder", false)
+	if languageLink == "" {
+		actions += addLanguage
+	}
+	actions += copyButton(d.URI, "") + actionLink("rename", f.Primary.URI, "重命名", "document", returnTo) + actionLink("move", f.Primary.URI, "移动", "document", returnTo) + button("/download?uri="+encodeURI(d.URI), "下载", "download", false) + deleteForm("/delete", f.Primary.URI, f.Primary.Version, f.Signature, "将这篇笔记的全部语言版本移入知识库回收站？", "删除")
 	header := `<div class="page-head"><h1` + titleAnchor + `>` + escape(d.Title) + `</h1><div class="btns">`
 	if returnTo != "" {
 		header += button(returnTo, "返回搜索", "arrow-left", false)
 	}
-	header += languageLink + button(returnURL, "所在目录", "folder", false) + button(withReturn(editURL(d.URI), returnTo), "编辑", "pencil", true) + menu("文档操作", actions, "", "") + `</div></div>`
-	content := operationNotice(r.optionalReport(d.VaultID, op)) + alert(d.Warning) + `<div class="alert" role="alert" data-document-update-error hidden></div><article class="md-body" lang="` + docLanguage(d) + `" data-reading-version="` + d.Version + `" data-reading-note-version="` + f.Signature + `" data-reading-note="` + escape(f.Primary.URI) + `" data-reading-document="` + escape(d.URI) + `" data-reading-directory="` + escape(ResourceURI(d.VaultID, dir)) + `">` + body + `</article>`
+	header += languageLink + button(withReturn(editURL(d.URI), returnTo), "编辑", "pencil", true) + menu("文档操作", actions, "", "") + `</div></div>`
+	content := operationNotice(r.optionalReport(d.VaultID, op)) + alert(d.Warning) + `<div class="alert" role="alert" data-document-update-error hidden></div><div class="update-notice" data-reading-update hidden role="status"><span>笔记已更新</span><button class="btn" type="button" data-load-update>加载更新</button></div><article class="md-body" lang="` + docLanguage(d) + `" data-reading-version="` + d.Version + `" data-reading-note-version="` + f.Signature + `" data-reading-note="` + escape(f.Primary.URI) + `" data-reading-document="` + escape(d.URI) + `" data-reading-directory="` + escape(ResourceURI(d.VaultID, dir)) + `">` + body + `</article>`
 	siblings := []Document{}
 	index := -1
 	for _, other := range notes {
@@ -411,11 +470,7 @@ func (r *Registry) documentPage(d Document, nonce, returnTo, op string) (string,
 			label, rel, symbol, extra = "下一篇", "next", "chevron-right", " reading-next"
 		}
 		if i < 0 || i >= len(siblings) {
-			text := "这是本目录第一篇"
-			if next {
-				text = "已是本目录最后一篇"
-			}
-			return `<div class="reading-boundary` + extra + `"><span class="reading-direction">` + label + `</span><span class="reading-title">` + text + `</span></div>`
+			return `<div aria-hidden="true"></div>`
 		}
 		other := siblings[i]
 		return `<a class="reading-neighbor` + extra + `" rel="` + rel + `" href="` + escape(withReturn(viewURL(other.URI)+"&reading=start", returnTo)) + `"><span class="reading-direction">` + icon(symbol) + label + `</span><span class="reading-title">` + escape(other.Title) + `</span></a>`
@@ -423,37 +478,22 @@ func (r *Registry) documentPage(d Document, nonce, returnTo, op string) (string,
 	if index >= 0 {
 		content += `<nav class="reading-nav reading-nav-bottom" aria-label="文末阅读导航">` + neighbor(index-1, false) + fmt.Sprintf(`<div class="reading-position"><span>第 %d / %d 篇</span><a href="%s">返回目录</a></div>`, index+1, len(siblings), escape(returnURL)) + neighbor(index+1, true) + `</nav>`
 	}
-	primaryByURI := map[string]Document{}
-	for _, n := range notes {
-		primaryByURI[n.URI] = n
-		for _, v := range n.LanguageVersions {
-			primaryByURI[v.URI] = n
-		}
-	}
 	backlinks := []Document{}
 	seen := map[string]bool{}
-	for _, other := range scan.Documents {
-		if other.URI == d.URI {
-			continue
-		}
-		for _, target := range wikiTargets(other.Body) {
-			resolved := resolveLink(target, scan.Documents, &other, false)
-			if resolved == nil {
-				continue
-			}
-			linked := false
-			for _, version := range f.Versions {
-				if resolved.URI == version.URI {
-					linked = true
-				}
-			}
-			primary := primaryByURI[other.URI]
-			if linked && primary.URI != f.Primary.URI && !seen[primary.URI] {
-				backlinks = append(backlinks, primary)
-				seen[primary.URI] = true
-			}
+	linked := map[string]bool{}
+	for _, version := range f.Versions {
+		for _, other := range scan.index.linkedFrom(version.URI) {
+			linked[other.URI] = true
 		}
 	}
+	for _, other := range scan.Documents {
+		primary := scan.index.groups[other.URI].Primary
+		if linked[other.URI] && primary.URI != f.Primary.URI && !seen[primary.URI] {
+			backlinks = append(backlinks, primary)
+			seen[primary.URI] = true
+		}
+	}
+
 	if len(backlinks) > 0 {
 		content += fmt.Sprintf(`<section class="backlinks"><h2>反向链接 <span class="muted">%d</span></h2><ul>`, len(backlinks))
 		for _, other := range backlinks {
@@ -475,7 +515,7 @@ func (r *Registry) documentPage(d Document, nonce, returnTo, op string) (string,
 		}
 		content += `</dl></details>`
 	}
-	return r.layout(d.Title, content, nonce, pageOptions{VaultID: d.VaultID, Directory: dir, Filename: path.Base(f.Primary.Relative), HasDirectory: true, Header: header, Outline: rendered.Headings, Query: returnQuery(returnTo)})
+	return r.layout(d.Title, content, nonce, pageOptions{VaultID: d.VaultID, Directory: dir, Filename: path.Base(f.Primary.Relative), HasDirectory: true, Header: header, Outline: rendered.Headings, Query: returnQuery(returnTo), Notes: siblings, CurrentNote: f.Primary.URI, ReturnTo: returnTo})
 }
 func highlight(s, query string) string {
 	out := ""

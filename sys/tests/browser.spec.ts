@@ -49,6 +49,52 @@ async function openActions(page: Page, label: string) {
   if (await summary.locator('..').getAttribute('open') === null) await summary.click();
 }
 
+test('reading loads no editor and revalidates the cached browser entry', async ({ page, applicationUrl }) => {
+  const requests: string[] = [];
+  page.on('request', request => requests.push(request.url()));
+  const uri = 'coral://vault/default/项目设计.md';
+  await page.goto(applicationUrl + '/document?' + new URLSearchParams({ uri }));
+  await expect(page.getByRole('link', { name: '编辑', exact: true })).toBeVisible();
+  expect(requests.some(url => /\/editor-[^/]+\.js/.test(url))).toBeFalsy();
+  await openActions(page, '文档操作');
+  await page.getByRole('link', { name: '所在目录', exact: true }).click();
+  await expect(page.locator('.file-list').getByRole('link', { name: '项目设计', exact: true })).toBeVisible();
+  const client = await page.evaluate(() => performance.getEntriesByType('resource')
+    .find(entry => entry.name.endsWith('/static/client.js'))?.toJSON());
+  expect(client.transferSize).toBeLessThan(1024);
+  await page.locator('.file-list').getByRole('link', { name: '项目设计', exact: true }).click();
+  await page.getByRole('link', { name: '编辑', exact: true }).click();
+  await expect(page.getByRole('button', { name: '预览', exact: true })).toBeEnabled();
+  expect(requests.some(url => /\/editor-[^/]+\.js/.test(url))).toBeTruthy();
+});
+
+test('formula batches keep navigation responsive, restore reading position and finish before printing', async ({ page, applicationUrl, applicationDirectory }) => {
+  const body = Array.from({ length: 100 }, (_, n) => `## Section ${n}\n\n  Inline $x_i+y_i$ and a formula.\n\n$$\n\\frac{e^{x_i}}{\\sum_j e^{x_j}}\n$$\n\n${'Paragraph content. '.repeat(30)}\n\n`).join('');
+  writeFileSync(join(applicationDirectory, 'obsdian/default/formulas.md'), '---\ntitle: Formulas\n---\n# Formulas\n\n' + body);
+  const target = applicationUrl + '/document?' + new URLSearchParams({ uri: 'coral://vault/default/formulas.md' });
+  await page.goto(target);
+  await expect(page.locator('[data-math-rendered]')).toHaveCount(200);
+  await page.locator('#section-60').scrollIntoViewIfNeeded();
+  await page.evaluate(() => scrollBy(0, 80));
+  await page.waitForTimeout(100);
+  const position = await page.locator('#section-60').evaluate(el => el.getBoundingClientRect().top);
+  await page.getByRole('link', { name: '编辑', exact: true }).click();
+  await expect(page.getByRole('button', { name: '预览', exact: true })).toBeEnabled();
+  await page.goBack();
+  await expect(page.locator('[data-math-rendered]')).toHaveCount(200);
+  await expect.poll(async () => Math.abs(await page.locator('#section-60').evaluate(el => el.getBoundingClientRect().top) - position)).toBeLessThan(10);
+  await page.reload();
+  await expect(page.locator('[data-math-rendered] .katex').first()).toBeAttached();
+  await page.evaluate(() => window.dispatchEvent(new Event('beforeprint')));
+  await expect(page.locator('[data-math-rendered]')).toHaveCount(200);
+  await page.getByRole('link', { name: '编辑', exact: true }).click();
+  const editor = page.getByRole('textbox', { name: 'Markdown 正文', exact: true });
+  await editor.fill('# Replacement\n\n$z^2$');
+  await expect(page.locator('#preview [data-math-rendered]')).toHaveCount(1);
+  await expect(page.locator('#preview')).not.toContainText('Section 60');
+  expect(await page.locator('#preview [data-tex]').getAttribute('data-tex')).toBe('z^2');
+});
+
 test('editor toolbar waits for its script before accepting interaction', async ({ page, applicationUrl }) => {
   const listing = await (await page.request.get(applicationUrl + '/api/documents?vault=default')).json();
   const document = listing.documents.find((item: { title: string }) => item.title === '项目设计');
@@ -171,6 +217,7 @@ test('navigate a dense directory and return from editing without losing the curr
   await expect(page.locator('.page-head h1')).toHaveText('第 35 节 · 长标题中的目录导航与笔记定位');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
   await page.screenshot({ path: testInfo.outputPath('dense-directory-reading.png') });
+  await openActions(page, '文档操作');
   await page.getByRole('link', { name: '所在目录', exact: true }).click();
   await expect(page.locator('.file-list li:target .page-link')).toHaveText('第 35 节 · 长标题中的目录导航与笔记定位');
   for (const filename of ['31.md', '32.md']) {
@@ -212,9 +259,11 @@ test('workspace separates folder navigation, article outline and reading at desk
     await expectSimpleWorkspace(page);
     await expect(page.locator('article')).toContainText('两个不同的限制');
     const sidebar = (await page.getByRole('complementary', { name: '知识库导航' }).boundingBox())!;
+    const notes = (await page.getByRole('complementary', { name: '笔记导航' }).boundingBox())!;
     const article = (await page.locator('article').boundingBox())!;
     const outline = (await page.getByRole('complementary', { name: '文章导航' }).boundingBox())!;
-    expect(outline.x).toBeGreaterThanOrEqual(sidebar.x + sidebar.width);
+    expect(notes.x).toBeGreaterThanOrEqual(sidebar.x + sidebar.width);
+    expect(outline.x).toBeGreaterThanOrEqual(notes.x + notes.width);
     expect(article.x).toBeGreaterThan(outline.x + outline.width);
     expect(article.width).toBeGreaterThan(680);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
@@ -281,12 +330,175 @@ test('article outline stays beside reading, supports keyboard jumps and tracks t
   await expect(duplicates.nth(1)).toHaveAttribute('aria-current', 'location');
   await page.goBack();
   await expect(chapter).toHaveAttribute('aria-current', 'location');
-  const toggle = outline.locator('.article-outline > summary');
+  const toggle = page.getByRole('button', { name: '收起章节', exact: true });
   await toggle.focus();
-  await page.keyboard.press('Enter');
+  await page.keyboard.press('Space');
   await expect(toc).toBeHidden();
-  await expect(toggle).toBeFocused();
+  await expect(page.getByRole('button', { name: '展开章节', exact: true })).toBeFocused();
   await expect(page.getByRole('navigation', { name: '目录树', exact: true })).toBeVisible();
+});
+
+test('note sidebar shows ordered siblings, selects the bilingual note and scrolls independently', async ({ page, applicationUrl, applicationDirectory }, testInfo) => {
+  const folder = '课程 空格';
+  const root = join(applicationDirectory, 'obsdian/default', folder);
+  mkdirSync(join(root, '子目录'), { recursive: true });
+  const chapterBody = '# Note\n\n## First\n\n' + 'A paragraph for reading.\n\n'.repeat(30) + '## Second\n\n' + 'More content.\n\n'.repeat(30);
+  writeFileSync(join(root, 'index.md'), '---\ntitle: 从这里开始\n---\n' + chapterBody);
+  for (let i = 1; i <= 90; i++) {
+    writeFileSync(join(root, `${i}.md`), `---\ntitle: ${i === 74 || i === 75 ? '重复标题' : `第 ${i} 篇笔记`}\n---\n${chapterBody}`);
+  }
+  const group = '00000000-0000-4000-8000-000000000075';
+  writeFileSync(join(root, '75.md'), `---\ntitle: 重复标题\ncoral_note_id: ${group}\ncoral_language: zh\ncoral_primary: true\n---\n${chapterBody}`);
+  writeFileSync(join(root, '75.en.md'), `---\ntitle: English note\ncoral_note_id: ${group}\ncoral_language: en\ncoral_primary: false\n---\n${chapterBody}`);
+  writeFileSync(join(root, '子目录/child.md'), '---\ntitle: 不应混入的子目录笔记\n---\nChild');
+  const target = applicationUrl + '/document?' + new URLSearchParams({ uri: 'coral://vault/default/' + encodeURIComponent(folder) + '/75.md', return_to: '/search?q=Note&vault=default&cursor=20' });
+  await page.goto(target);
+  const notes = page.getByRole('navigation', { name: '当前文件夹笔记', exact: true });
+  await expect(notes.getByRole('link')).toHaveCount(91);
+  expect((await notes.locator('a > span').allTextContents()).slice(0, 12)).toEqual(['从这里开始', ...Array.from({ length: 11 }, (_, i) => `第 ${i + 1} 篇笔记`)]);
+  await expect(notes).not.toContainText('不应混入的子目录笔记');
+  await expect(notes).not.toContainText('English note');
+  const current = notes.locator('[aria-current="page"]');
+  await expect(current).toHaveAttribute('title', '75.md');
+  await expect(notes.getByRole('link', { name: '打开笔记：重复标题（74.md）', exact: true })).toHaveText('重复标题74.md');
+  await expect(notes.getByRole('link', { name: '打开笔记：重复标题（75.md）', exact: true })).toHaveText('重复标题75.md');
+  const container = (await notes.boundingBox())!, selected = (await current.boundingBox())!;
+  expect(selected.y).toBeGreaterThanOrEqual(container.y);
+  expect(selected.y + selected.height).toBeLessThanOrEqual(container.y + container.height + 1);
+  expect(await page.evaluate(() => scrollY)).toBe(0);
+  await page.screenshot({ path: testInfo.outputPath('folder-notes-chapters.png') });
+  const oldScroll = await notes.evaluate(element => element.scrollTop);
+  const box = (await notes.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.wheel(0, 500);
+  await expect.poll(() => notes.evaluate(element => element.scrollTop)).toBeGreaterThan(oldScroll);
+  expect(await page.evaluate(() => scrollY)).toBe(0);
+  await page.getByRole('link', { name: '切换到英文', exact: true }).click();
+  await expect(current).toHaveAttribute('title', '75.md');
+  const next = notes.getByRole('link', { name: '打开笔记：第 76 篇笔记', exact: true });
+  await next.focus();
+  await page.keyboard.press('Enter');
+  await expect(current).toHaveAttribute('title', '76.md');
+  const returnTo = new URL(new URL(page.url()).searchParams.get('return_to')!, applicationUrl);
+  expect(Object.fromEntries(returnTo.searchParams)).toEqual({ q: 'Note', vault: 'default', cursor: '20' });
+  await page.getByRole('link', { name: '返回搜索', exact: true }).click();
+  expect(new URL(page.url()).searchParams.get('cursor')).toBe('20');
+  await page.goto(target);
+  writeFileSync(join(root, '76.md'), '---\ntitle: Updated note\n---\nUpdated');
+  await page.reload();
+  await expect(notes.getByRole('link', { name: '打开笔记：Updated note', exact: true })).toBeAttached();
+  await expect(notes.getByRole('link', { name: '打开笔记：第 76 篇笔记', exact: true })).toHaveCount(0);
+});
+
+test('three direct sidebar buttons restore the three columns and toggle each with one click', async ({ page, applicationUrl }, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 960 });
+  await page.addInitScript(() => {
+    for (const name of ['folders', 'notes', 'chapters']) localStorage.setItem('coral:drawer:' + name, 'closed');
+  });
+  await page.goto(applicationUrl + '/document?' + new URLSearchParams({ uri: 'coral://vault/default/项目设计.md' }));
+  const controls = page.getByRole('group', { name: '侧栏', exact: true });
+  await expect(controls.getByRole('button')).toHaveText(['目录', '笔记', '章节']);
+  await expect(controls.getByRole('checkbox')).toHaveCount(0);
+  await expect(controls.locator('details')).toHaveCount(0);
+  const originalWidth = (await page.locator('article').boundingBox())!.width;
+  await page.screenshot({ path: testInfo.outputPath('three-columns.png') });
+  const panels = [
+    ['目录', '#folder-drawer', '目录树'], ['笔记', '#note-drawer', '当前文件夹笔记'], ['章节', '#chapter-drawer', '文章目录'],
+  ];
+  for (let i = 0; i < panels.length; i++) {
+    const [name, panel, content] = panels[i];
+    const toggle = controls.getByRole('button', { name: '收起' + name, exact: true });
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.getByRole('navigation', { name: content, exact: true })).toBeVisible();
+    await toggle.click();
+    const reopen = controls.getByRole('button', { name: '展开' + name, exact: true });
+    await expect(reopen).toBeFocused();
+    await expect(reopen).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.getByRole('navigation', { name: content, exact: true })).toBeHidden();
+    await expect(page.locator(panel)).toHaveAttribute('inert', '');
+    await expect.poll(async () => (await page.locator(panel).boundingBox())!.width).toBe(0);
+    for (const [, , other] of panels.slice(i + 1)) {
+      await expect(page.getByRole('navigation', { name: other, exact: true })).toBeVisible();
+    }
+  }
+  expect((await page.locator('article').boundingBox())!.width).toBeGreaterThan(originalWidth + 300);
+  await page.screenshot({ path: testInfo.outputPath('collapsed-columns.png') });
+  await controls.getByRole('button', { name: '展开笔记', exact: true }).press('Space');
+  await expect(page.getByRole('navigation', { name: '当前文件夹笔记', exact: true })).toBeVisible();
+  await expect(controls.getByRole('button', { name: '收起笔记', exact: true })).toBeFocused();
+  await page.reload();
+  await expect(controls.getByRole('button', { name: '展开目录', exact: true })).toHaveAttribute('aria-expanded', 'false');
+  await expect(controls.getByRole('button', { name: '展开章节', exact: true })).toHaveAttribute('aria-expanded', 'false');
+  await expect(controls.getByRole('button', { name: '收起笔记', exact: true })).toHaveAttribute('aria-expanded', 'true');
+  await controls.getByRole('button', { name: '展开目录', exact: true }).press('Enter');
+  await controls.getByRole('button', { name: '展开章节', exact: true }).click();
+  await expect(page.getByRole('navigation', { name: '目录树', exact: true })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: '文章目录', exact: true })).toBeVisible();
+  await controls.getByRole('button', { name: '收起目录', exact: true }).click();
+  await page.getByRole('link', { name: '编辑', exact: true }).click();
+  await expect(controls.getByRole('button')).toHaveCount(1);
+  await expect(controls.getByRole('button', { name: '展开目录', exact: true })).toBeVisible();
+  await controls.getByRole('button', { name: '展开目录', exact: true }).click();
+  await expect(page.getByRole('navigation', { name: '目录树', exact: true })).toBeVisible();
+  await page.getByRole('link', { name: '返回阅读', exact: true }).click();
+  await page.getByRole('navigation', { name: '当前文件夹笔记', exact: true }).getByRole('link', { name: '打开笔记：开发记录', exact: true }).click();
+  await expect(controls.getByRole('button')).toHaveText(['目录', '笔记', '章节']);
+  const folder = (await page.locator('.sidebar').boundingBox())!;
+  const notes = (await page.locator('.reading-notes').boundingBox())!;
+  const chapters = (await page.locator('.reading-outline').boundingBox())!;
+  const article = (await page.locator('article').boundingBox())!;
+  expect(notes.x).toBeGreaterThanOrEqual(folder.x + folder.width);
+  expect(chapters.x).toBeGreaterThanOrEqual(notes.x + notes.width);
+  expect(article.x).toBeGreaterThan(chapters.x + chapters.width);
+  expect(chapters.width).toBeGreaterThan(100);
+  await expect(page.getByRole('navigation', { name: '文章目录', exact: true }).getByRole('link')).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath('three-columns-without-headings.png') });
+});
+
+test('direct sidebar buttons work when browser storage is unavailable', async ({ page, applicationUrl }) => {
+  await page.addInitScript(() => Object.defineProperty(window, 'localStorage', { get() { throw new Error('Storage disabled'); } }));
+  await page.goto(applicationUrl + '/document?' + new URLSearchParams({ uri: 'coral://vault/default/项目设计.md' }));
+  await page.getByRole('button', { name: '收起笔记', exact: true }).click();
+  await expect(page.getByRole('navigation', { name: '当前文件夹笔记', exact: true })).toBeHidden();
+  await page.getByRole('button', { name: '展开笔记', exact: true }).click();
+  await expect(page.getByRole('navigation', { name: '当前文件夹笔记', exact: true })).toBeVisible();
+  await page.getByRole('navigation', { name: '当前文件夹笔记', exact: true }).getByRole('link', { name: '打开笔记：开发记录', exact: true }).click();
+  await expect(page.locator('.page-head h1')).toHaveText('开发记录');
+});
+
+test('closed reading columns stay hidden before the main script loads in both language directions', async ({ page, applicationUrl }, testInfo) => {
+  const source = await createLanguageFixture(page, applicationUrl);
+  const response = await page.request.post(applicationUrl + '/languages/new', { form: {
+    uri: source.uri, version: source.version, source_language: 'zh', language: 'en',
+    title: 'English column fixture', content: '# English column fixture\n\n## Chapter\n\nA stable reading layout.',
+  }, headers: { Accept: 'application/json' } });
+  expect(response.ok()).toBeTruthy();
+  const english = await response.json();
+  await page.goto(applicationUrl + source.url);
+  await page.evaluate(() => {
+    for (const name of ['folders', 'notes', 'chapters']) localStorage.setItem('coral:drawer:v2:' + name, 'closed');
+  });
+  for (const [language, target] of [['en', english.url], ['zh', source.url]]) {
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const handler = async (route: import('@playwright/test').Route) => { await held; await route.continue(); };
+    await page.route('**/static/client.js', handler);
+    try {
+      await page.goto(applicationUrl + target, { waitUntil: 'commit' });
+      await expect(page.locator('article')).toHaveAttribute('lang', language);
+      await expect(page.locator('.drawer-controls')).toBeHidden();
+      for (const panel of ['#folder-drawer', '#note-drawer', '#chapter-drawer']) {
+        await expect(page.locator(panel)).toBeHidden();
+        expect((await page.locator(panel).boundingBox())!.width).toBe(0);
+      }
+      await page.screenshot({ path: testInfo.outputPath('columns-before-client-' + language + '.png') });
+      release();
+      await expect(page.getByRole('button', { name: '展开目录', exact: true })).toHaveAttribute('aria-expanded', 'false');
+    } finally {
+      release();
+      await page.unroute('**/static/client.js', handler);
+    }
+  }
 });
 
 test('article outline links work without JavaScript', async ({ browser, applicationUrl }) => {
@@ -295,10 +507,15 @@ test('article outline links work without JavaScript', async ({ browser, applicat
     const page = await context.newPage();
     await page.goto(applicationUrl + '/?vault=default');
     await page.getByRole('link', { name: '项目设计', exact: true }).click();
+    await expect(page.locator('.drawer-controls')).toBeHidden();
     const toc = page.getByRole('navigation', { name: '文章目录', exact: true });
     await toc.getByRole('link', { name: '查询接口', exact: true }).click();
     expect(new URL(page.url()).hash).toBe('#' + encodeURIComponent('查询接口'));
     await expect(page.getByRole('link', { name: '编辑', exact: true })).toBeVisible();
+    const notes = page.getByRole('navigation', { name: '当前文件夹笔记', exact: true });
+    await notes.getByRole('link', { name: '打开笔记：开发记录', exact: true }).click();
+    await expect(page.locator('.page-head h1')).toHaveText('开发记录');
+    await expect(notes.locator('[aria-current="page"]')).toContainText('开发记录');
   } finally { await context.close(); }
 });
 
@@ -369,6 +586,73 @@ test('native action and import menus work without JavaScript', async ({ browser,
   } finally { await context.close(); }
 });
 
+test('destructive native forms require confirmation and retain recovery without JavaScript', async ({ browser, page, applicationUrl }) => {
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  try {
+    const native = await context.newPage();
+    await native.goto(applicationUrl + '/?vault=default');
+    await openActions(native, '文档操作：项目设计');
+    await native.getByRole('button', { name: '删除文档：项目设计', exact: true }).click();
+    await expect(native.getByRole('heading', { name: '移入回收站', exact: true })).toBeVisible();
+    await native.getByRole('link', { name: '取消', exact: true }).click();
+    await expect(native.getByRole('link', { name: '项目设计', exact: true })).toBeVisible();
+    await openActions(native, '文档操作：项目设计');
+    await native.getByRole('button', { name: '删除文档：项目设计', exact: true }).click();
+    await native.getByRole('button', { name: '移入回收站', exact: true }).click();
+    await expect(native.getByRole('status')).toContainText('已移入回收站');
+    await expect(native.getByRole('button', { name: '恢复', exact: true })).toBeVisible();
+    await native.getByRole('link', { name: '回收站', exact: true }).click();
+    await openActions(native, '回收内容操作：项目设计.md');
+    await native.getByRole('button', { name: '彻底删除：项目设计.md', exact: true }).click();
+    await expect(native.getByRole('heading', { name: '彻底删除', exact: true })).toBeVisible();
+    await native.getByRole('link', { name: '取消', exact: true }).click();
+    await expect(native.getByRole('button', { name: '恢复：项目设计.md', exact: true })).toBeVisible();
+    await openActions(native, '回收站操作');
+    await native.getByRole('button', { name: '清空回收站', exact: true }).click();
+    await expect(native.getByRole('heading', { name: '彻底删除', exact: true })).toBeVisible();
+    await native.getByRole('link', { name: '取消', exact: true }).click();
+    await native.getByRole('button', { name: '恢复：项目设计.md', exact: true }).click();
+    const restored = await page.request.get(applicationUrl + '/api/document?' + new URLSearchParams({ uri: 'coral://vault/default/项目设计.md' }));
+    expect(restored.ok()).toBeTruthy();
+  } finally { await context.close(); }
+});
+
+test('mixed Markdown imports show each saved path and rejected-file reason', async ({ page, applicationUrl }, testInfo) => {
+  await page.goto(applicationUrl + '/?vault=default');
+  await openActions(page, '导入文档');
+  await page.getByLabel('Markdown 文档').setInputFiles([
+    { name: 'imported.md', mimeType: 'text/markdown', buffer: Buffer.from('# Imported content\n\nA valid note.') },
+    { name: 'unsupported.txt', mimeType: 'text/plain', buffer: Buffer.from('Not Markdown') },
+    { name: 'broken.md', mimeType: 'text/markdown', buffer: Buffer.from([0xff, 0xfe]) },
+  ]);
+  await page.getByRole('button', { name: '上传 Markdown', exact: true }).click();
+  const result = page.getByRole('region', { name: '导入结果', exact: true });
+  await expect(result.getByRole('status')).toHaveText('已导入 1 个文档，2 个文件未导入。');
+  await result.locator('summary').click();
+  await expect(result.getByRole('link', { name: 'imported.md', exact: true })).toBeVisible();
+  await expect(result).toContainText('unsupported.txt：仅支持 .md 或 .markdown 文件');
+  await expect(result).toContainText('broken.md：文件不是有效的 UTF-8 文本');
+  await page.screenshot({ path: testInfo.outputPath('mixed-import-results.png'), fullPage: true });
+  await result.getByRole('link', { name: 'imported.md', exact: true }).click();
+  await expect(page.locator('article')).toContainText('A valid note.');
+});
+
+test('a Chinese knowledge-base name works without choosing a storage identifier', async ({ page, applicationUrl }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(applicationUrl);
+  await page.getByRole('link', { name: '创建知识库', exact: true }).click();
+  await page.getByRole('textbox', { name: '知识库名称', exact: true }).fill('学习笔记');
+  await page.getByRole('textbox', { name: '简介（选填）', exact: true }).fill('随手记录');
+  await page.getByRole('button', { name: '创建知识库', exact: true }).click();
+  const identifier = new URL(page.url()).searchParams.get('vault');
+  expect(identifier).toMatch(/^[a-z][a-z0-9_-]*$/);
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('学习笔记');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+  await page.screenshot({ path: testInfo.outputPath('chinese-vault-mobile.png'), fullPage: true });
+  await page.getByRole('link', { name: '全部知识库', exact: true }).click();
+  await expect(page.getByRole('link', { name: '学习笔记', exact: true })).toBeVisible();
+});
+
 test('continuous reading remembers each directory and locates the last document on return', async ({ page, applicationUrl, applicationDirectory }, testInfo) => {
   const root = join(applicationDirectory, 'obsdian/default/课程 #1');
   mkdirSync(join(root, '其他目录'), { recursive: true });
@@ -384,6 +668,7 @@ test('continuous reading remembers each directory and locates the last document 
   await expect(nav.locator('[rel="next"] .reading-title')).toHaveText('第 11 篇');
   await page.getByRole('navigation', { name: '文末阅读导航', exact: true }).locator('[rel="next"]').click();
   await expect(page.locator('.page-head h1')).toHaveText('第 11 篇');
+  await openActions(page, '文档操作');
   await page.getByRole('link', { name: '所在目录', exact: true }).click();
   await expect(page).toHaveURL(/#doc-[a-f0-9]+$/);
   const current = page.locator('.file-list .is-last-read');
@@ -398,7 +683,7 @@ test('continuous reading remembers each directory and locates the last document 
   await resume.getByRole('link', { name: '下一篇', exact: true }).click();
   await expect(page.locator('.page-head h1')).toHaveText('第 100 篇');
   await expect(nav.locator('[rel="next"]')).toHaveCount(0);
-  await expect(nav).toContainText('已是本目录最后一篇');
+  await expect(nav.locator('[rel="prev"]')).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('continuous-reading.png') });
   await page.goBack();
   await expect(current.locator('.page-link')).toHaveText('第 100 篇');
@@ -430,6 +715,7 @@ test('reading navigation works when browser storage is disabled', async ({ page,
   await page.goto(applicationUrl + '/document?' + new URLSearchParams({ uri: 'coral://vault/default/10.md' }));
   await page.getByRole('navigation', { name: '文末阅读导航', exact: true }).locator('[rel="next"]').click();
   await expect(page.locator('.page-head h1')).toHaveText('Storage next');
+  await openActions(page, '文档操作');
   await page.getByRole('link', { name: '所在目录', exact: true }).click();
   await expect(page.locator('.file-list li:target .page-link')).toHaveText('Storage next');
   await expect(page.getByRole('region', { name: '阅读进度' })).toBeHidden();
@@ -525,7 +811,7 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     await expect(actions.getByRole('link', { name: '重命名', exact: true })).toHaveAttribute('class', 'btn');
     await expect(documentCopy).toHaveAttribute('data-copy', documentUri);
     await documentCopy.click();
-    await expect(documentCopy).toHaveText('复制链接');
+    await expect(documentCopy).toHaveText('已复制');
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(documentUri);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
     await page.screenshot({ path: testInfo.outputPath('full-document-path.png'), fullPage: true });
@@ -904,11 +1190,12 @@ test('writing tools, modes, local drafts and conflict protection', async ({ page
   await expect(page.locator('#save-status')).toHaveText('草稿已存于本机');
   page.once('dialog', dialog => dialog.accept());
   await page.reload();
-  await page.getByRole('button', { name: '恢复草稿', exact: true }).click();
   await expect(editor).toHaveText('**写作体验验证**');
+  await expect(page.locator('.draft-notice')).toContainText('已恢复本地草稿');
   await editor.press('ControlOrMeta+s');
   await expect(page.locator('#save-status')).toHaveText('已保存');
-  await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('coral:draft:')).length)).toBe(0);
+  expect(await page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('coral:draft:v2:'))
+    .every(key => localStorage.getItem('coral:draft-resolved:' + JSON.parse(localStorage.getItem(key)!).id) === '1'))).toBeTruthy();
 
   // Simulate an Obsidian edit while the browser holds an older version.
   const uri = await page.locator('[name="uri"]').inputValue();
@@ -985,6 +1272,9 @@ test('deep folder stays visible and long reading resumes after editing and an MC
     const updated = await client.callTool({ name: 'update_document', arguments: { uri, version: read.structuredContent!.version, content: String(read.structuredContent!.content) + '\n## Agent 新增章节\n\nAgent 添加的新内容。' } });
     expect(updated.isError).toBeFalsy();
     await page.evaluate(() => dispatchEvent(new Event('focus')));
+    await expect(page.locator('[data-reading-update]')).toBeVisible();
+    await expect(page.locator('article')).not.toContainText('Agent 添加的新内容。');
+    await page.getByRole('button', { name: '加载更新', exact: true }).click();
     await expect(page.locator('article')).toContainText('Agent 添加的新内容。');
     await expect(page.getByRole('navigation', { name: '文章目录', exact: true }).getByRole('link', { name: 'Agent 新增章节', exact: true })).toHaveCount(1);
     await expect.poll(() => page.evaluate(() => scrollY)).toBeGreaterThan(position - 80);
@@ -1021,10 +1311,9 @@ test('two new documents retain independent drafts and saving clears only its own
     await expect(page.locator('.page-head h1')).toHaveText('第一份草稿');
     second.once('dialog', dialog => dialog.accept());
     await second.reload();
-    await second.getByRole('button', { name: '恢复草稿', exact: true }).click();
     await expect(second.getByRole('textbox', { name: '标题', exact: true })).toHaveValue('第二份草稿');
     await expect(second.getByRole('textbox', { name: '正文', exact: true })).toHaveText('第二份未完成正文');
-    await expect.poll(() => second.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('coral:draft:')).length)).toBe(1);
+    expect(await second.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('coral:draft:v2:')).map(key => JSON.parse(localStorage.getItem(key)!)).every(draft => draft.title === '第二份草稿'))).toBeTruthy();
     await second.screenshot({ path: testInfo.outputPath('independent-draft.png') });
   } finally { await second.close({ runBeforeUnload: false }); }
 });
@@ -1070,6 +1359,213 @@ test('typing during a delayed save leaves an accurate pending draft status', asy
   expect(read.content).not.toContain('继续输入尚未提交');
   await page.getByRole('button', { name: '保存', exact: true }).click();
   await expect(page.locator('#save-status')).toHaveText('已保存');
+});
+
+test('same-note tabs keep independent drafts and directory recovery preserves conflict protection', async ({ page, context, applicationUrl }) => {
+  const uri = 'coral://vault/default/' + encodeURIComponent('项目设计.md');
+  const target = applicationUrl + '/edit?' + new URLSearchParams({ uri });
+  await page.goto(target);
+  await page.getByRole('textbox', { name: 'Markdown 正文', exact: true }).fill('First tab work');
+  await expect(page.locator('#save-status')).toHaveText('草稿已存于本机');
+  const second = await context.newPage();
+  await second.goto(target);
+  await expect(second.getByRole('textbox', { name: 'Markdown 正文', exact: true })).toHaveText('First tab work');
+  await second.getByRole('textbox', { name: 'Markdown 正文', exact: true }).fill('Second tab work');
+  await expect(second.locator('#save-status')).toHaveText('草稿已存于本机');
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(page.locator('#save-status')).toHaveText('已保存');
+  await second.close({ runBeforeUnload: false });
+  await page.goto(applicationUrl + '/?vault=default');
+  await page.getByRole('link', { name: '恢复草稿：项目设计', exact: true }).click();
+  await expect(page.getByRole('button', { name: '恢复草稿', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '恢复草稿', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Markdown 正文', exact: true })).toHaveText('Second tab work');
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(page.locator('#save-error')).toContainText('文档已被修改');
+  const current = await (await page.request.get(applicationUrl + '/api/document?' + new URLSearchParams({ uri }))).json();
+  expect(current.content).toContain('First tab work');
+});
+
+test('a second writer saving first preserves the original tab and copied-URL draft', async ({ page, context, applicationUrl }) => {
+  for (const copied of [false, true]) {
+    const title = copied ? 'reverse-copy' : 'reverse-independent';
+    const created = await (await page.request.post(applicationUrl + '/new', { form: {
+      vault: 'default', title, content: '# Initial content',
+    }, headers: { Accept: 'application/json' } })).json();
+    const target = applicationUrl + '/edit?' + new URLSearchParams({ uri: created.uri });
+    const first = await context.newPage();
+    const second = await context.newPage();
+    try {
+      await first.goto(target);
+      await first.getByRole('textbox', { name: 'Markdown 正文', exact: true }).fill('Original writer remains recoverable');
+      await expect(first.locator('#save-status')).toHaveText('草稿已存于本机');
+      await second.goto(copied ? first.url() : target);
+      await expect(second.getByRole('textbox', { name: 'Markdown 正文', exact: true })).toHaveText('Original writer remains recoverable');
+      await second.getByRole('textbox', { name: 'Markdown 正文', exact: true }).fill('Second writer saved first');
+      await second.getByRole('button', { name: '保存', exact: true }).click();
+      await expect(second.locator('#save-status')).toHaveText('已保存');
+      expect(await second.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('coral:draft:v2:'))
+        .some(key => JSON.parse(localStorage.getItem(key)!).content === 'Original writer remains recoverable'))).toBeTruthy();
+    } finally {
+      await first.close({ runBeforeUnload: false }); await second.close({ runBeforeUnload: false });
+    }
+    const recovery = await context.newPage();
+    try {
+      await recovery.goto(applicationUrl + '/?vault=default');
+      await recovery.getByRole('link', { name: '恢复草稿：' + title, exact: true }).click();
+      await recovery.getByRole('button', { name: '恢复草稿', exact: true }).click();
+      await expect(recovery.getByRole('textbox', { name: 'Markdown 正文', exact: true })).toHaveText('Original writer remains recoverable');
+      await recovery.getByRole('button', { name: '保存', exact: true }).click();
+      await expect(recovery.locator('#save-error')).toContainText('文档已被修改');
+      const current = await (await page.request.get(applicationUrl + '/api/document?' + new URLSearchParams({ uri: created.uri }))).json();
+      expect(current.content).toContain('Second writer saved first');
+    } finally { await recovery.close({ runBeforeUnload: false }); }
+  }
+});
+
+test('discarding a recovered draft returns to the last acknowledged save', async ({ page, applicationUrl }) => {
+  const uri = 'coral://vault/default/' + encodeURIComponent('项目设计.md');
+  await page.goto(applicationUrl + '/?vault=default');
+  await page.evaluate(uri => localStorage.setItem('coral:draft:' + uri, JSON.stringify({
+    content: 'Older pending work', title: '', directory: '', version: 'stale-version', updated: Date.now(),
+  })), uri);
+  await page.goto(applicationUrl + '/edit?' + new URLSearchParams({ uri }));
+  const editor = page.getByRole('textbox', { name: 'Markdown 正文', exact: true });
+  await editor.fill('The newly saved baseline');
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(page.locator('#save-status')).toHaveText('已保存');
+  const savedVersion = await page.locator('[name="version"]').inputValue();
+  await page.getByRole('button', { name: '恢复草稿', exact: true }).click();
+  await expect(editor).toHaveText('Older pending work');
+  await page.getByRole('button', { name: '丢弃草稿', exact: true }).click();
+  await expect(editor).toHaveText('The newly saved baseline');
+  await expect(page.locator('[name="version"]')).toHaveValue(savedVersion);
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(page.locator('#save-status')).toHaveText('已保存');
+});
+
+test('pending recovery survives typing and discarding can be undone after reload', async ({ page, applicationUrl }) => {
+  const uri = 'coral://vault/default/' + encodeURIComponent('项目设计.md');
+  await page.goto(applicationUrl + '/?vault=default');
+  await page.evaluate(uri => localStorage.setItem('coral:draft:' + uri, JSON.stringify({
+    content: 'An older unmerged draft', title: '', directory: '', version: 'stale-version', updated: Date.now(),
+  })), uri);
+  await page.goto(applicationUrl + '/edit?' + new URLSearchParams({ uri }));
+  const editor = page.getByRole('textbox', { name: 'Markdown 正文', exact: true });
+  await expect(page.getByRole('button', { name: '恢复草稿', exact: true })).toBeVisible();
+  await editor.fill('Keep the text typed before recovery');
+  await expect(page.locator('#save-status')).toHaveText('草稿已存于本机');
+  await expect(page.getByRole('button', { name: '恢复草稿', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '丢弃草稿', exact: true }).click();
+  await expect(page.getByRole('button', { name: '撤销丢弃', exact: true })).toBeVisible();
+  page.once('dialog', dialog => dialog.accept());
+  await page.reload();
+  await expect(editor).toHaveText('Keep the text typed before recovery');
+  await page.getByRole('button', { name: '撤销丢弃', exact: true }).click();
+  await expect(editor).toHaveText('Keep the text typed before recovery');
+  await page.getByRole('button', { name: '恢复草稿', exact: true }).click();
+  await expect(editor).toHaveText('An older unmerged draft');
+  expect(await page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('coral:draft:v2:'))
+    .some(key => JSON.parse(localStorage.getItem(key)!).content === 'Keep the text typed before recovery'))).toBeTruthy();
+});
+
+test('discarding an untouched recovery candidate keeps undo available after reload', async ({ page, applicationUrl }) => {
+  const uri = 'coral://vault/default/' + encodeURIComponent('项目设计.md');
+  await page.goto(applicationUrl + '/edit?' + new URLSearchParams({ uri }));
+  const editor = page.getByRole('textbox', { name: 'Markdown 正文', exact: true });
+  await editor.fill('The older draft still needs recovery');
+  await expect(page.locator('#save-status')).toHaveText('草稿已存于本机');
+  const version = await page.locator('[name="version"]').inputValue();
+  const external = await page.request.post(applicationUrl + '/edit', { form: { uri, version, content: 'External newer body' },
+    headers: { Accept: 'application/json' } });
+  expect(external.ok()).toBeTruthy();
+  const currentServer = await (await page.request.get(applicationUrl + '/api/document?' + new URLSearchParams({ uri }))).json();
+  page.once('dialog', dialog => dialog.accept());
+  await page.reload();
+  await expect(page.getByRole('button', { name: '恢复草稿', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '丢弃草稿', exact: true }).click();
+  await page.reload();
+  await expect(page.locator('#editor')).toHaveValue(currentServer.content);
+  await expect(page.locator('[name="version"]')).toHaveValue(currentServer.version);
+  await page.getByRole('button', { name: '撤销丢弃', exact: true }).click();
+  await page.getByRole('button', { name: '恢复草稿', exact: true }).click();
+  await expect(editor).toHaveText('The older draft still needs recovery');
+  await expect(page.locator('[name="version"]')).toHaveValue(version);
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(page.locator('#save-error')).toContainText('文档已被修改');
+  const afterConflict = await (await page.request.get(applicationUrl + '/api/document?' + new URLSearchParams({ uri }))).json();
+  expect(afterConflict.content).toBe(currentServer.content);
+});
+
+test('abandoned new-note drafts are discoverable from their directory', async ({ page, applicationUrl }) => {
+  await page.goto(applicationUrl + '/new?vault=default');
+  await page.getByRole('textbox', { name: '标题', exact: true }).fill('还没写完的笔记');
+  await page.getByRole('textbox', { name: '正文', exact: true }).fill('这份草稿需要能够重新找到。');
+  await expect(page.locator('#save-status')).toHaveText('草稿已存于本机');
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('link', { name: '返回', exact: true }).click();
+  await page.getByRole('link', { name: '恢复草稿：还没写完的笔记', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: '标题', exact: true })).toHaveValue('还没写完的笔记');
+  await expect(page.getByRole('textbox', { name: '正文', exact: true })).toHaveText('这份草稿需要能够重新找到。');
+});
+
+test('formatting commands toggle the same selection without nesting markup', async ({ page, applicationUrl }) => {
+  const uri = 'coral://vault/default/' + encodeURIComponent('项目设计.md');
+  await page.goto(applicationUrl + '/edit?' + new URLSearchParams({ uri }));
+  const editor = page.getByRole('textbox', { name: 'Markdown 正文', exact: true });
+  for (const name of ['加粗', '斜体', '插入链接', '代码块']) {
+    await editor.fill('Repeated formatting');
+    await editor.press('ControlOrMeta+a');
+    const command = page.getByRole('button', { name, exact: true });
+    await command.click();
+    await expect(editor).not.toHaveText('Repeated formatting');
+    await command.click();
+    await expect(editor).toHaveText('Repeated formatting');
+  }
+});
+
+test('formatting preserves existing emphasis and handles partial Markdown selections', async ({ page, applicationUrl }) => {
+  const uri = 'coral://vault/default/' + encodeURIComponent('项目设计.md');
+  await page.goto(applicationUrl + '/edit?' + new URLSearchParams({ uri }));
+  const editor = page.getByRole('textbox', { name: 'Markdown 正文', exact: true });
+  for (const scenario of [
+    { source: '**bold**', start: 2, length: 4, command: '斜体', expected: '***bold***' },
+    { source: '*italic*', start: 1, length: 6, command: '加粗', expected: '***italic***' },
+    { source: '**partial words**', start: 2, length: 7, command: '斜体', expected: '***partial* words**' },
+    { source: '**bold**', start: 1, length: 4, command: '斜体', expected: '***bold***' },
+  ]) {
+    await editor.fill(scenario.source);
+    await editor.press('Home');
+    for (let i = 0; i < scenario.start; i++) await editor.press('ArrowRight');
+    for (let i = 0; i < scenario.length; i++) await editor.press('Shift+ArrowRight');
+    const command = page.getByRole('button', { name: scenario.command, exact: true });
+    await command.click();
+    await expect(editor).toHaveText(scenario.expected);
+    await expect(page.getByRole('button', { name: '加粗', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByRole('button', { name: '斜体', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await command.click();
+    await expect(editor).toHaveText(scenario.source);
+  }
+});
+
+test('copy feedback is visible, announced, and resets after repeated clicks or rejection', async ({ page, applicationUrl }) => {
+  await page.goto(applicationUrl + '/?vault=default');
+  await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', {
+    configurable: true, value: { writeText: async () => {} },
+  }));
+  await openActions(page, '文档操作：项目设计');
+  const copy = page.getByRole('button', { name: '复制文档 URI：项目设计', exact: true });
+  await copy.click();
+  await copy.click();
+  await expect(copy).toHaveText('已复制');
+  await expect(page.getByRole('status').filter({ hasText: '已复制' })).toHaveCount(1);
+  await expect(copy).toHaveText('复制链接');
+  await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', {
+    configurable: true, value: { writeText: async () => { throw new Error('Clipboard unavailable'); } },
+  }));
+  await copy.click();
+  await expect(copy).toHaveText('复制失败，请重试');
+  await expect(page.getByRole('status').filter({ hasText: '复制失败，请重试' })).toHaveCount(1);
 });
 
 test('move notes from the directory and document pages with collision protection', async ({ page, applicationUrl, applicationDirectory }, testInfo) => {
@@ -1132,6 +1628,7 @@ test('moving and renaming through Web maintains inbound notes, images and a read
   expect(readFileSync(join(root, 'index.md'), 'utf8')).toContain('archive/' + encodeURIComponent('每日 #100%.md'));
   await expect.poll(() => page.locator('article img').evaluate((image: HTMLImageElement) => image.naturalWidth)).toBe(1);
   await page.screenshot({ path: testInfo.outputPath('relocation-report.png'), fullPage: true });
+  await openActions(page, '文档操作');
   await page.getByRole('link', { name: '所在目录', exact: true }).click();
   await openActions(page, '知识库工具');
   await page.getByRole('link', { name: '重命名当前文件夹', exact: true }).click();
@@ -1189,9 +1686,9 @@ test('mouse selection is visible on the active editor line and supports copy and
 test('create a knowledge base then create and upload Markdown documents', async ({ page, applicationUrl }, testInfo) => {
   await page.goto(applicationUrl);
   await page.getByRole('link', { name: '创建知识库', exact: true }).click();
-  await page.getByLabel('仓库名称（英文）').fill('research');
+  await page.getByLabel('知识库名称', { exact: true }).fill('research');
   await expect(page.getByLabel('知识库标识')).toHaveCount(0);
-  await page.getByLabel('简介').fill('研发设计与记录');
+  await page.getByLabel('简介（选填）', { exact: true }).fill('研发设计与记录');
   await page.getByRole('button', { name: '创建知识库', exact: true }).click();
   await expect(page).toHaveURL(/vault=research$/);
   const vaultId = new URL(page.url()).searchParams.get('vault')!;
@@ -1242,16 +1739,20 @@ test('create empty folders in the current directory and handle duplicate names',
 });
 
 test('browse Obsidian folders, create and upload in the selected directory', async ({ page, applicationUrl }, testInfo) => {
+  await page.request.post(applicationUrl + '/directories/new', { form: { vault: 'default', name: '项目资料' } });
+  await page.request.post(applicationUrl + '/directories/new', { form: { vault: 'default', directory: '项目资料', name: 'docs' } });
   await page.goto(applicationUrl + '/?vault=default');
   await page.getByRole('link', { name: '创建文档', exact: true }).click();
   await expect(page.locator('[name="type"]')).toHaveCount(0);
   await page.getByRole('textbox', { name: '标题', exact: true }).fill('方案');
-  await page.getByRole('textbox', { name: '保存目录', exact: true }).fill('项目资料/docs');
+  await page.locator('details').filter({ has: page.getByText('更改位置', { exact: true }) }).locator('summary').click();
+  await page.getByRole('combobox', { name: '保存目录', exact: true }).selectOption('项目资料/docs');
   await page.getByRole('textbox', { name: '正文', exact: true }).fill('# 方案\n\nObsidian 文件夹。');
   await page.getByRole('button', { name: '创建', exact: true }).click();
   await openActions(page, '文档操作');
   await expect(page.getByRole('button', { name: '复制 Coral 链接', exact: true })).toHaveAttribute('data-copy', /\/docs\//);
   await expect(page.getByRole('button', { name: '转换分类' })).toHaveCount(0);
+  await openActions(page, '文档操作');
   await page.getByRole('link', { name: '所在目录', exact: true }).click();
   await expect(page.locator('.file-list').getByRole('link', { name: '方案', exact: true })).toBeVisible();
   await page.getByRole('navigation', { name: '当前位置' }).getByRole('link', { name: 'default', exact: true }).click();
@@ -1266,7 +1767,7 @@ test('browse Obsidian folders, create and upload in the selected directory', asy
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
   await page.screenshot({ path: testInfo.outputPath('folder-browser.png'), fullPage: true });
   await page.getByRole('link', { name: '创建文档', exact: true }).click();
-  await expect(page.getByRole('textbox', { name: '保存目录', exact: true })).toHaveValue('项目资料/docs');
+  await expect(page.locator('select[name="directory"]')).toHaveValue('项目资料/docs');
   await page.getByRole('link', { name: '返回', exact: true }).click();
   await page.getByRole('link', { name: '上级目录', exact: true }).click();
   await expect(page.getByRole('link', { name: 'docs', exact: true })).toBeVisible();
@@ -1286,14 +1787,14 @@ test('delete documents and folders directly from the listing with confirmation',
   page.once('dialog', async dialog => { expect(dialog.message()).toContain('回收站'); await dialog.accept(); });
   await openActions(page, '文档操作：开发记录');
   await page.getByRole('button', { name: '删除文档：开发记录', exact: true }).click();
-  await expect(page.getByRole('status')).toContainText('已移入知识库回收站');
+  await expect(page.getByRole('status')).toContainText('已移入回收站');
   await expect(page.getByRole('link', { name: '开发记录', exact: true })).toHaveCount(0);
   await page.getByRole('link', { name: '待删除', exact: true }).click();
   await page.getByRole('link', { name: 'nested', exact: true }).click();
   page.once('dialog', dialog => dialog.accept());
   await openActions(page, '文档操作：目录文档');
   await page.getByRole('button', { name: '删除文档：目录文档', exact: true }).click();
-  await expect(page.getByRole('status')).toContainText('已移入知识库回收站');
+  await expect(page.getByRole('status')).toContainText('已移入回收站');
   expect(new URL(page.url()).searchParams.get('directory')).toBe('待删除/nested');
   await page.getByRole('link', { name: '上级目录', exact: true }).click();
   page.once('dialog', dialog => dialog.dismiss());
@@ -1303,14 +1804,14 @@ test('delete documents and folders directly from the listing with confirmation',
   page.once('dialog', async dialog => { expect(dialog.message()).toContain('全部 0 个文件'); await dialog.accept(); });
   await openActions(page, '文件夹操作：nested');
   await page.getByRole('button', { name: '删除文件夹：nested', exact: true }).click();
-  await expect(page.getByRole('status')).toContainText('已移入知识库回收站');
+  await expect(page.getByRole('status')).toContainText('已移入回收站');
   await expect(page.getByRole('link', { name: 'nested', exact: true })).toHaveCount(0);
   expect(new URL(page.url()).searchParams.get('directory')).toBe('待删除');
   await page.getByRole('navigation', { name: '当前位置', exact: true }).getByRole('link', { name: 'default', exact: true }).click();
   page.once('dialog', async dialog => { expect(dialog.message()).toContain('附件'); await dialog.accept(); });
   await openActions(page, '文件夹操作：assets');
   await page.getByRole('button', { name: '删除文件夹：assets', exact: true }).click();
-  await expect(page.getByRole('status')).toContainText('已移入知识库回收站');
+  await expect(page.getByRole('status')).toContainText('已移入回收站');
   await expect(page.getByRole('link', { name: 'assets', exact: true })).toHaveCount(0);
   await expect(page.getByRole('link', { name: '项目设计', exact: true })).toBeVisible();
 });
@@ -1320,7 +1821,7 @@ test('restore documents and folders from trash and confirm permanent deletion an
   page.once('dialog', dialog => dialog.accept());
   await openActions(page, '文档操作：项目设计');
   await page.getByRole('button', { name: '删除文档：项目设计', exact: true }).click();
-  await expect(page.getByRole('status')).toContainText('已移入知识库回收站');
+  await expect(page.getByRole('status')).toContainText('已移入回收站');
   await page.getByRole('link', { name: '回收站', exact: true }).click();
   await expect(page.getByRole('heading', { level: 1 })).toContainText('回收站');
   await expect(page.locator('.sidebar-trash')).toHaveAttribute('href', '/trash?vault=default');
@@ -1331,7 +1832,7 @@ test('restore documents and folders from trash and confirm permanent deletion an
   page.once('dialog', dialog => dialog.accept());
   await openActions(page, '文件夹操作：assets');
   await page.getByRole('button', { name: '删除文件夹：assets', exact: true }).click();
-  await expect(page.getByRole('status')).toContainText('已移入知识库回收站');
+  await expect(page.getByRole('status')).toContainText('已移入回收站');
   await page.goto(applicationUrl + '/trash');
   await page.getByRole('button', { name: '恢复：assets', exact: true }).click();
   await expect(page.getByRole('status')).toHaveText('已恢复。');
@@ -1339,14 +1840,16 @@ test('restore documents and folders from trash and confirm permanent deletion an
   page.once('dialog', dialog => dialog.accept());
   await openActions(page, '文件夹操作：assets');
   await page.getByRole('button', { name: '删除文件夹：assets', exact: true }).click();
-  await expect(page.getByRole('status')).toContainText('已移入知识库回收站');
+  await expect(page.getByRole('status')).toContainText('已移入回收站');
   await page.goto(applicationUrl + '/trash');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
   await page.screenshot({ path: testInfo.outputPath('trash-files.png'), fullPage: true });
   page.once('dialog', dialog => dialog.dismiss());
+  await openActions(page, '回收内容操作：assets');
   await page.getByRole('button', { name: '彻底删除：assets', exact: true }).click();
   await expect(page.getByRole('button', { name: '恢复：assets', exact: true })).toBeVisible();
   page.once('dialog', dialog => dialog.accept());
+  await openActions(page, '回收内容操作：assets');
   await page.getByRole('button', { name: '彻底删除：assets', exact: true }).click();
   await expect(page.getByRole('status')).toHaveText('已彻底删除回收内容。');
   await expect(page.getByRole('button', { name: '恢复：assets', exact: true })).toHaveCount(0);
@@ -1354,9 +1857,10 @@ test('restore documents and folders from trash and confirm permanent deletion an
   page.once('dialog', dialog => dialog.accept());
   await openActions(page, '文档操作：开发记录');
   await page.getByRole('button', { name: '删除文档：开发记录', exact: true }).click();
-  await expect(page.getByRole('status')).toContainText('已移入知识库回收站');
+  await expect(page.getByRole('status')).toContainText('已移入回收站');
   await page.goto(applicationUrl + '/trash');
   page.once('dialog', dialog => dialog.accept());
+  await openActions(page, '回收站操作');
   await page.getByRole('button', { name: '清空回收站', exact: true }).click();
   await expect(page.getByRole('status')).toHaveText('回收站已清空。');
   await expect(page.getByText('回收站为空。', { exact: true })).toBeVisible();
@@ -1368,11 +1872,13 @@ test('recycle an entire knowledge base, restore it, and permanently delete it', 
   await page.request.post(applicationUrl + '/new', { form: { vault: vaultId, title: '保留文档', content: '可恢复的内容' } });
   await page.goto(applicationUrl);
   page.once('dialog', dialog => dialog.dismiss());
+  await openActions(page, '知识库操作：recycle');
   await page.getByRole('button', { name: '删除知识库：recycle', exact: true }).click();
   await expect(page.getByRole('link', { name: 'recycle', exact: true })).toBeVisible();
   page.once('dialog', dialog => dialog.accept());
+  await openActions(page, '知识库操作：recycle');
   await page.getByRole('button', { name: '删除知识库：recycle', exact: true }).click();
-  await expect(page.getByRole('status')).toHaveText('知识库已移入回收站。');
+  await expect(page.getByRole('status')).toContainText('已移入回收站。');
   await expect(page.getByRole('link', { name: 'recycle', exact: true })).toHaveCount(0);
   await page.getByRole('link', { name: '回收站', exact: true }).click();
   await expect(page.getByRole('button', { name: '恢复知识库：recycle', exact: true })).toBeVisible();
@@ -1386,10 +1892,12 @@ test('recycle an entire knowledge base, restore it, and permanently delete it', 
   await expect(page.locator('article')).toHaveText('可恢复的内容');
   await page.goto(applicationUrl);
   page.once('dialog', dialog => dialog.accept());
+  await openActions(page, '知识库操作：recycle');
   await page.getByRole('button', { name: '删除知识库：recycle', exact: true }).click();
-  await expect(page.getByRole('status')).toHaveText('知识库已移入回收站。');
+  await expect(page.getByRole('status')).toContainText('已移入回收站。');
   await page.getByRole('link', { name: '回收站', exact: true }).click();
   page.once('dialog', dialog => dialog.accept());
+  await openActions(page, '回收知识库操作：recycle');
   await page.getByRole('button', { name: '彻底删除知识库：recycle', exact: true }).click();
   await expect(page.getByRole('status')).toHaveText('已彻底删除回收内容。');
   await expect(page.getByRole('button', { name: '恢复知识库：recycle', exact: true })).toHaveCount(0);
@@ -1408,9 +1916,11 @@ async function createLanguageFixture(page: Page, applicationUrl: string) {
 test('bilingual notes add and edit a language while browsing and search show one note', async ({ page, applicationUrl }, testInfo) => {
   const source = await createLanguageFixture(page, applicationUrl);
   await page.goto(applicationUrl + source.url);
-  await page.getByRole('link', { name: '添加英文版', exact: true }).click();
+  await openActions(page, '文档操作');
+  await page.getByRole('link', { name: '添加语言版本', exact: true }).click();
   await expect(page.getByRole('combobox', { name: '原文语言', exact: true })).toHaveValue('zh');
-  await expect(page.getByRole('combobox', { name: '新增语言', exact: true })).toHaveValue('en');
+  await expect(page.locator('input[name="language"]')).toHaveValue('en');
+  await expect(page.locator('[data-target-language]')).toHaveText('新增英文版');
   await page.getByRole('textbox', { name: '标题', exact: true }).fill('KV Cache');
   await page.getByRole('textbox', { name: '新版本正文', exact: true }).fill('# KV Cache\n\nEnglish version.\n\n## Bandwidth\n\nKV Cache bandwidth limits decoding.');
   await expect(page.locator('#preview h2')).toHaveText('Bandwidth');
@@ -1439,6 +1949,7 @@ test('bilingual notes add and edit a language while browsing and search show one
   const original = await (await page.request.get(applicationUrl + '/api/document?' + new URLSearchParams({ uri: source.uri }))).json();
   expect(original.content).toContain('中文原文。');
   expect(original.content).not.toContain('bandwidth was updated');
+  await openActions(page, '文档操作');
   await page.getByRole('link', { name: '所在目录', exact: true }).click();
   await expect(page.locator('.file-list [data-document-uri]')).toHaveCount(1);
   await expect(page.locator('.file-list li:target .page-link')).toHaveText('KV 缓存');
@@ -1480,13 +1991,15 @@ test('bilingual language creation and switching work with native forms without J
   try {
     const native = await context.newPage();
     await native.goto(applicationUrl + source.url);
-    await native.getByRole('link', { name: '添加英文版', exact: true }).click();
+    await openActions(native, '文档操作');
+    await native.getByRole('link', { name: '添加语言版本', exact: true }).click();
     await native.getByRole('textbox', { name: '标题', exact: true }).fill('Native English');
     await native.getByRole('textbox', { name: '新版本正文', exact: true }).fill('# Native English\n\n## A chapter\n\nCreated without browser scripts.');
     await native.getByRole('button', { name: '保存版本', exact: true }).click();
     await expect(native.locator('article')).toContainText('Created without browser scripts.');
     await native.getByRole('link', { name: '切换到中文', exact: true }).click();
     await expect(native.locator('article')).toContainText('中文原文。');
+    await openActions(native, '文档操作');
     await native.getByRole('link', { name: '所在目录', exact: true }).click();
     await expect(native.locator('.file-list [data-document-uri]')).toHaveCount(1);
     await native.screenshot({ path: testInfo.outputPath('bilingual-native-directory.png') });
@@ -1535,9 +2048,13 @@ test('bilingual versions added through MCP appear when the reading window is rea
     } });
     expect(created.isError).toBeFalsy();
     await page.evaluate(() => dispatchEvent(new Event('focus')));
+    await expect(page.locator('[data-reading-update]')).toBeVisible();
+    await expect(page.getByRole('link', { name: '切换到英文', exact: true })).toHaveCount(0);
+    await page.getByRole('button', { name: '加载更新', exact: true }).click();
     await expect(page.getByRole('link', { name: '切换到英文', exact: true })).toBeVisible();
     await page.getByRole('link', { name: '切换到英文', exact: true }).click();
     await expect(page.locator('article')).toContainText('The agent supplied this translation.');
+    expect(await page.locator('article > p').first().evaluate(element => getComputedStyle(element).textIndent)).toBe('40px');
     await expect(page.getByRole('navigation', { name: '文章目录', exact: true }).getByRole('link', { name: 'English chapter', exact: true })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath('bilingual-mcp-reading.png') });
   } finally { await client.close(); }
@@ -1549,17 +2066,18 @@ test('bilingual English originals can add Chinese and restore language choices w
   }, headers: { Accept: 'application/json' } });
   const source = await response.json();
   await page.goto(applicationUrl + source.url);
-  await page.getByRole('link', { name: '添加英文版', exact: true }).click();
+  await openActions(page, '文档操作');
+  await page.getByRole('link', { name: '添加语言版本', exact: true }).click();
   await page.getByRole('combobox', { name: '原文语言', exact: true }).selectOption('en');
-  await page.getByRole('combobox', { name: '新增语言', exact: true }).selectOption('zh');
+  await expect(page.locator('input[name="language"]')).toHaveValue('zh');
+  await expect(page.locator('[data-target-language]')).toHaveText('新增中文版');
   await page.getByRole('textbox', { name: '标题', exact: true }).fill('中文版本');
   await page.getByRole('textbox', { name: '新版本正文', exact: true }).fill('# 中文版本\n\n这篇笔记对应同一份英文原文。');
   await expect(page.locator('#save-status')).toHaveText('草稿已存于本机');
   page.once('dialog', dialog => dialog.accept());
   await page.reload();
-  await page.getByRole('button', { name: '恢复草稿', exact: true }).click();
   await expect(page.getByRole('combobox', { name: '原文语言', exact: true })).toHaveValue('en');
-  await expect(page.getByRole('combobox', { name: '新增语言', exact: true })).toHaveValue('zh');
+  await expect(page.locator('input[name="language"]')).toHaveValue('zh');
   await page.getByRole('button', { name: '保存版本', exact: true }).click();
   await expect(page.locator('article')).toHaveAttribute('lang', 'zh');
   await expect(page.locator('article')).toContainText('这篇笔记对应同一份英文原文。');
@@ -1591,7 +2109,7 @@ test('bilingual backlinks show each referring note once in Chinese and omit the 
   await expect(page.locator('.page-head h1')).toHaveText('引用笔记');
 });
 
-test('bilingual new-version preview keeps its own metadata and resolves relative images from the source', async ({ page, applicationUrl }, testInfo) => {
+test('bilingual new-version preview keeps its own metadata and resolves relative images from the source', async ({ page, applicationUrl, applicationDirectory }, testInfo) => {
   await page.request.post(applicationUrl + '/directories/new', { form: { vault: 'default', name: '排版预览' } });
   const response = await page.request.post(applicationUrl + '/new', { form: {
     vault: 'default', directory: '排版预览', title: '中文缩进原文', content: '---\nparagraph_indent: 2em\n---\n# 中文缩进原文\n\n原文正文有缩进。\n\n![像素](../assets/pixel.png)',
@@ -1601,22 +2119,43 @@ test('bilingual new-version preview keeps its own metadata and resolves relative
   await page.goto(applicationUrl + source.url);
   const sourceParagraph = page.locator('article > p').filter({ hasText: '原文正文有缩进。' });
   expect(await sourceParagraph.evaluate(element => getComputedStyle(element).textIndent)).toBe('40px');
-  await page.getByRole('link', { name: '添加英文版', exact: true }).click();
-  await page.getByRole('textbox', { name: '标题', exact: true }).fill('English without inherited indentation');
+  await openActions(page, '文档操作');
+  await page.getByRole('link', { name: '添加语言版本', exact: true }).click();
+  await page.getByRole('textbox', { name: '标题', exact: true }).fill('English default indentation');
   const editor = page.getByRole('textbox', { name: '新版本正文', exact: true });
-  const content = '# English without inherited indentation\n\nA paragraph with no indentation.\n\n![Pixel](../assets/pixel.png)';
+  const content = '# English default indentation\n\nAn English paragraph with default indentation.\n\n![Pixel](../assets/pixel.png)';
   await editor.fill(content);
-  const previewParagraph = page.locator('#preview > p').filter({ hasText: 'A paragraph with no indentation.' });
-  await expect.poll(() => previewParagraph.evaluate(element => getComputedStyle(element).textIndent)).toBe('0px');
-  await expect.poll(() => page.locator('#preview img').evaluate((image: HTMLImageElement) => image.naturalWidth)).toBe(1);
-  await editor.fill('---\nparagraph_indent: 2em\n---\n' + content);
+  const previewParagraph = page.locator('#preview > p').filter({ hasText: 'An English paragraph with default indentation.' });
   await expect.poll(() => previewParagraph.evaluate(element => getComputedStyle(element).textIndent)).toBe('40px');
-  await editor.fill(content);
+  await expect.poll(() => page.locator('#preview img').evaluate((image: HTMLImageElement) => image.naturalWidth)).toBe(1);
+  await editor.fill('---\nparagraph_indent: none\n---\n' + content);
   await expect.poll(() => previewParagraph.evaluate(element => getComputedStyle(element).textIndent)).toBe('0px');
+  await editor.fill(content);
+  await expect.poll(() => previewParagraph.evaluate(element => getComputedStyle(element).textIndent)).toBe('40px');
   await page.getByRole('button', { name: '保存版本', exact: true }).click();
   await expect(page.locator('article')).toHaveAttribute('lang', 'en');
-  expect(await page.locator('article > p').filter({ hasText: 'A paragraph with no indentation.' }).evaluate(element => getComputedStyle(element).textIndent)).toBe('0px');
+  expect(await page.locator('article > p').filter({ hasText: 'An English paragraph with default indentation.' }).evaluate(element => getComputedStyle(element).textIndent)).toBe('40px');
   await expect.poll(() => page.locator('article img').evaluate((image: HTMLImageElement) => image.naturalWidth)).toBe(1);
+  const englishUri = new URL(page.url()).searchParams.get('uri')!;
+  const english = await (await page.request.get(applicationUrl + '/api/document?' + new URLSearchParams({ uri: englishUri }))).json();
+  const filename = join(applicationDirectory, 'obsdian/default', english.path);
+  const legacy = readFileSync(filename, 'utf8').replace(/^paragraph_indent:.*\r?\n/m, '');
+  writeFileSync(filename, legacy);
+  await page.reload();
+  expect(await page.locator('article > p').first().evaluate(element => getComputedStyle(element).textIndent)).toBe('40px');
+  expect(readFileSync(filename, 'utf8')).toBe(legacy);
+  await page.screenshot({ path: testInfo.outputPath('english-paragraph-default.png') });
+  await page.getByRole('link', { name: '编辑', exact: true }).click();
+  const existingEditor = page.getByRole('textbox', { name: 'Markdown 正文', exact: true });
+  await existingEditor.fill('---\n---\nAn updated English paragraph.');
+  await expect.poll(() => page.locator('#preview > p').first().evaluate(element => getComputedStyle(element).textIndent)).toBe('40px');
+  await existingEditor.fill('---\nparagraph_indent: none\n---\nAn updated English paragraph.');
+  await expect.poll(() => page.locator('#preview > p').first().evaluate(element => getComputedStyle(element).textIndent)).toBe('0px');
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(page.locator('#save-status')).toHaveText('已保存');
+  await page.getByRole('link', { name: '返回阅读', exact: true }).click();
+  await expect(page.locator('article')).toHaveAttribute('lang', 'en');
+  expect(await page.locator('article > p').first().evaluate(element => getComputedStyle(element).textIndent)).toBe('0px');
   await page.getByRole('link', { name: '切换到中文', exact: true }).click();
   expect(await sourceParagraph.evaluate(element => getComputedStyle(element).textIndent)).toBe('40px');
   await page.screenshot({ path: testInfo.outputPath('bilingual-paragraph-parity.png') });

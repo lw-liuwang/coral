@@ -59,66 +59,6 @@ func stripExtension(s string) string {
 	}
 	return s
 }
-func resolveLink(target string, documents []Document, current *Document, relative bool) *Document {
-	target = strings.SplitN(target, "#", 2)[0]
-	candidates := decodeCandidates(target)
-	if relative && len(candidates) > 1 {
-		candidates[0], candidates[1] = candidates[1], candidates[0]
-	}
-	for _, candidate := range candidates {
-		base := stripExtension(candidate)
-		if base == "" && current != nil {
-			return current
-		}
-		local := ""
-		if current != nil {
-			local = stripExtension(path.Clean(path.Join(parent(current.Relative), base)))
-		}
-		if relative {
-			base = local
-		}
-		for i := range documents {
-			if stripExtension(documents[i].Relative) == base {
-				return &documents[i]
-			}
-		}
-		if relative {
-			continue
-		}
-		for i := range documents {
-			if stripExtension(documents[i].Relative) == local {
-				return &documents[i]
-			}
-		}
-		matches := []int{}
-		for i, d := range documents {
-			parts := strings.Split(stripExtension(d.Relative), "/")
-			match := false
-			for j := range parts {
-				if strings.Join(parts[j:], "/") == base {
-					match = true
-				}
-			}
-			if aliases, ok := d.Metadata["aliases"].([]any); ok {
-				for _, alias := range aliases {
-					if alias == base {
-						match = true
-					}
-				}
-			}
-			if match {
-				matches = append(matches, i)
-			}
-		}
-		if len(matches) == 1 {
-			return &documents[matches[0]]
-		}
-		if len(matches) > 1 {
-			return nil
-		}
-	}
-	return nil
-}
 
 type RenderedHeading struct {
 	ID    string `json:"id"`
@@ -214,7 +154,7 @@ func (p *cjkEmphasis) Parse(parent ast.Node, block text.Reader, pc parser.Contex
 }
 
 type markdownRenderer struct {
-	Documents   []Document
+	Links       *linkIndex
 	Current     *Document
 	Metadata    map[string]any
 	Headings    []RenderedHeading
@@ -324,7 +264,7 @@ func (r *markdownRenderer) link(w util.BufWriter, source []byte, n ast.Node, ent
 			}
 		}
 	} else if r.Current != nil && !externalTarget(target) && isMarkdown(strings.SplitN(target, "#", 2)[0]) {
-		d := resolveLink(target, r.Documents, r.Current, true)
+		d := r.Links.resolve(target, r.Current, true)
 		if d != nil {
 			fragment := ""
 			if i := strings.Index(target, "#"); i >= 0 {
@@ -412,6 +352,14 @@ func hasImage(n ast.Node) bool {
 	})
 	return found
 }
+
+func paragraphIndented(metadata map[string]any) bool {
+	if value, explicit := metadata["paragraph_indent"]; explicit {
+		return value == "2em"
+	}
+	return stringValue(metadata["coral_language"]) == "en"
+}
+
 func (r *markdownRenderer) paragraph(w util.BufWriter, source []byte, n ast.Node, enter bool) (ast.WalkStatus, error) {
 	if enter {
 		class := ""
@@ -429,7 +377,7 @@ func (r *markdownRenderer) paragraph(w util.BufWriter, source []byte, n ast.Node
 		if prev := n.PreviousSibling(); prev != nil {
 			visual = hasImage(prev) || prev.Kind() == ast.KindFencedCodeBlock || prev.Kind() == extast.KindTable
 		}
-		if r.Metadata["paragraph_indent"] == "2em" && n.Parent().Kind() == ast.KindDocument && narrative && plain != "" && !hasImage(n) && !(visual && captionPattern.MatchString(plain)) {
+		if paragraphIndented(r.Metadata) && n.Parent().Kind() == ast.KindDocument && narrative && plain != "" && !hasImage(n) && !(visual && captionPattern.MatchString(plain)) {
 			class = ` class="paragraph-indent"`
 		}
 		w.WriteString("<p" + class + ">")
@@ -485,7 +433,7 @@ func (r *markdownRenderer) inline(w util.BufWriter, source []byte, n ast.Node, e
 		if label == "" {
 			label = in.Value
 		}
-		d := resolveLink(in.Value, r.Documents, r.Current, false)
+		d := r.Links.resolve(in.Value, r.Current, false)
 		target := ""
 		class := ""
 		if d != nil {
@@ -544,8 +492,14 @@ func mathBlocks(body string) string {
 	}
 	return out.String()
 }
-func RenderMarkdown(body string, documents []Document, current *Document, metadata map[string]any) (RenderedMarkdown, error) {
-	r := &markdownRenderer{Documents: documents, Current: current, Metadata: metadata, IDs: map[string]bool{}, Headings: []RenderedHeading{}, WikiTargets: []string{}}
+func RenderMarkdown(body string, documents []Document, current *Document, metadata map[string]any, indexes ...*linkIndex) (RenderedMarkdown, error) {
+	var links *linkIndex
+	if len(indexes) > 0 {
+		links = indexes[0]
+	} else {
+		links = newLinkIndex(documents)
+	}
+	r := &markdownRenderer{Links: links, Current: current, Metadata: metadata, IDs: map[string]bool{}, Headings: []RenderedHeading{}, WikiTargets: []string{}}
 	md := goldmark.New(goldmark.WithExtensions(extension.GFM), goldmark.WithParserOptions(parser.WithInlineParsers(util.Prioritized(&inlineParser{}, 90), util.Prioritized(&cjkEmphasis{}, 400))), goldmark.WithRendererOptions(renderer.WithNodeRenderers(util.Prioritized(r, 100))))
 	var b bytes.Buffer
 	if err := md.Convert([]byte(mathBlocks(body)), &b); err != nil {

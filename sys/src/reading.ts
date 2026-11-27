@@ -10,6 +10,7 @@ export function mountReading() {
     const uri = article.dataset.readingDocument!;
     const positionKey = 'coral:reading-position:' + uri;
     const updateError = document.querySelector<HTMLElement>('[data-document-update-error]');
+    const update = document.querySelector<HTMLElement>('[data-reading-update]');
     const topbar = document.querySelector<HTMLElement>('.topbar');
     const updateHeadingOffset = () => {
       if (topbar) document.documentElement.style.setProperty('--reading-heading-offset', Math.ceil(topbar.getBoundingClientRect().height + 16) + 'px');
@@ -79,6 +80,21 @@ export function mountReading() {
       requestAnimationFrame(() => { restoring = false; updateToc(); });
     };
     requestAnimationFrame(restorePosition);
+    let restoreAfterMath = true;
+    const userNavigated = () => { restoreAfterMath = false; };
+    window.addEventListener('wheel', userNavigated, { passive: true });
+    window.addEventListener('touchstart', userNavigated, { passive: true });
+    window.addEventListener('pointerdown', userNavigated, { passive: true });
+    window.addEventListener('keydown', event => {
+      if (['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End', ' '].includes(event.key)) userNavigated();
+    });
+    document.addEventListener('coral:math-ready', event => {
+      if (!restoreAfterMath || (event as CustomEvent<{ root: ParentNode }>).detail.root !== document) return;
+      if (location.hash) {
+        try { document.getElementById(decodeURIComponent(location.hash.slice(1)))?.scrollIntoView(); }
+        catch { /* Malformed anchors cannot prevent reading. */ }
+      } else restorePosition();
+    });
     const schedulePosition = () => {
       if (pending) return;
       pending = true;
@@ -108,12 +124,9 @@ export function mountReading() {
           throw new Error(errorMessage);
         }
         if (updateError) updateError.hidden = true;
-        if (latest.version && latest.version !== article.dataset.readingVersion
-          || latest.note_version && article.dataset.readingNoteVersion && latest.note_version !== article.dataset.readingNoteVersion) {
-          savePosition();
-          reloading = true;
-          location.reload();
-        }
+        const changed = latest.version && latest.version !== article.dataset.readingVersion
+          || latest.note_version && article.dataset.readingNoteVersion && latest.note_version !== article.dataset.readingNoteVersion;
+        if (update) update.hidden = !changed;
       } catch {
         if (updateError) {
           updateError.textContent = errorMessage;
@@ -121,6 +134,11 @@ export function mountReading() {
         }
       } finally { checking = false; }
     };
+    update?.querySelector('[data-load-update]')?.addEventListener('click', () => {
+      savePosition();
+      reloading = true;
+      location.reload();
+    });
     window.addEventListener('focus', () => { void checkVersion(); });
     window.addEventListener('pageshow', () => { schedulePosition(); void checkVersion(); });
     document.addEventListener('visibilitychange', () => {

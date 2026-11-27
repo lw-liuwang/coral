@@ -120,7 +120,7 @@ func (r *Registry) Family(uri string) (Family, error) {
 		return Family{}, err
 	}
 	uri = d.URI
-	docs := []Document{d}
+	groups := groupNotes([]Document{d})
 	if uuidPattern.MatchString(stringValue(d.Metadata["coral_note_id"])) {
 		scan, err := r.Scan(d.VaultID)
 		if err != nil {
@@ -129,9 +129,9 @@ func (r *Registry) Family(uri string) (Family, error) {
 		if scan.Skipped > 0 {
 			return Family{}, fail(409, "部分笔记无法读取，不能确认完整的语言版本关联，请修复后重试")
 		}
-		docs = scan.Documents
+		groups = scan.index.groups
 	}
-	f, ok := groupNotes(docs)[uri]
+	f, ok := groups[uri]
 	if !ok {
 		return f, fail(409, "读取期间笔记位置发生变化，请重新打开")
 	}
@@ -281,6 +281,9 @@ func (r *Registry) CreateLanguage(uri, language, content, version, sourceLanguag
 	meta["coral_note_id"] = id
 	meta["coral_language"] = language
 	meta["coral_primary"] = language == "zh"
+	if _, explicit := meta["paragraph_indent"]; language == "en" && !explicit {
+		meta["paragraph_indent"] = "2em"
+	}
 	meta["updated"] = today()
 	if _, ok := meta["created"]; !ok {
 		meta["created"] = today()

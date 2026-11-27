@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -49,6 +48,7 @@ type Document struct {
 	LanguageVersions       []LanguageVersion `json:"language_versions,omitempty"`
 	LanguageInfoIncomplete bool              `json:"language_info_incomplete,omitempty"`
 	LanguageInfoError      string            `json:"language_info_error,omitempty"`
+	index                  *documentIndex
 }
 
 func (d Document) Public() map[string]any {
@@ -59,8 +59,10 @@ func (d Document) Public() map[string]any {
 }
 
 type Scan struct {
-	Documents []Document
-	Skipped   int
+	Documents   []Document
+	Skipped     int
+	directories []string
+	index       *vaultIndex
 }
 type Folder struct {
 	Name          string `json:"name"`
@@ -85,14 +87,14 @@ type Entry struct {
 	Version  string `json:"version"`
 }
 type Registry struct {
-	Config   Config
-	mu       sync.Mutex
-	cache    map[string]Document
-	testHook func(string) error
+	Config       Config
+	cache        *registryCache
+	requestScans map[string]Scan
+	testHook     func(string) error
 }
 
 func NewRegistry(c Config) (*Registry, error) {
-	r := &Registry{Config: c, cache: map[string]Document{}}
+	r := &Registry{Config: c, cache: &registryCache{vaults: map[string]*vaultCache{}, fingerprints: map[string]cachedFingerprint{}}}
 	dir := filepath.Join(c.DataDir, "obsdian")
 	if !exists(dir) && !exists(filepath.Join(c.DataDir, ".coral/vault-trash/default/state.json")) {
 		if err := os.MkdirAll(filepath.Join(dir, "default/.obsidian"), 0755); err != nil {
@@ -156,6 +158,9 @@ func (r *Registry) Vaults() ([]Vault, error) {
 			}
 			if id, ok := manifest["id"].(string); ok {
 				v.ID = id
+			}
+			if name := strings.TrimSpace(stringValue(manifest["name"])); name != "" {
+				v.Name = name
 			}
 			v.Description = stringValue(manifest["description"])
 		}
@@ -257,10 +262,15 @@ func (r *Registry) documentAt(v Vault, relative string) (Document, error) {
 	if !utf8.Valid(b) {
 		return Document{}, fail(400, "文档不是 UTF-8 编码，请下载原始文件")
 	}
-	uri := ResourceURI(v.ID, relative)
+	c := r.vaultCache(v)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.parse(v, relative, b), nil
+}
+func (c *vaultCache) parse(v Vault, relative string, b []byte) Document {
 	version := digest(b)
-	if d, ok := r.cache[uri]; ok && d.Version == version {
-		return d, nil
+	if d, ok := c.documents[relative]; ok && d.Version == version {
+		return d
 	}
 	raw := string(b)
 	m, body, err := parseMarkdown(raw)
@@ -270,10 +280,11 @@ func (r *Registry) documentAt(v Vault, relative string) (Document, error) {
 		body = raw
 		warning = "YAML 属性格式无效，已显示原文"
 	}
-	d := Document{URI: uri, VaultID: v.ID, Relative: relative, Title: titleFor(m, strings.TrimSuffix(path.Base(relative), path.Ext(relative))), Version: version, Size: len(b), Raw: raw, Body: body, Metadata: m, Warning: warning}
-	r.cache[uri] = d
-	return d, nil
+	d := Document{URI: ResourceURI(v.ID, relative), VaultID: v.ID, Relative: relative, Title: titleFor(m, strings.TrimSuffix(path.Base(relative), path.Ext(relative))), Version: version, Size: len(b), Raw: raw, Body: body, Metadata: m, Warning: warning, index: &documentIndex{}}
+	c.documents[relative] = d
+	return d
 }
+
 func (r *Registry) Document(uri string) (Document, error) {
 	id, rel, err := parseURI(uri)
 	if err != nil {
@@ -319,11 +330,18 @@ func naturalLess(a, b string) bool {
 	return a < b
 }
 func (r *Registry) Scan(id string) (Scan, error) {
+	if scan, ok := r.requestScans[id]; ok {
+		return scan, nil
+	}
 	v, err := r.Vault(id)
 	if err != nil {
 		return Scan{}, err
 	}
-	scan := Scan{Documents: []Document{}}
+	c := r.vaultCache(v)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	scan := Scan{Documents: []Document{}, directories: []string{""}}
+	files := map[string]scannedFile{}
 	var walk func(string) error
 	walk = func(dir string) error {
 		p, err := securePath(v.Root, dir, true)
@@ -335,11 +353,10 @@ func (r *Registry) Scan(id string) (Scan, error) {
 			return fail(404, "无法读取知识库目录")
 		}
 		sort.Slice(es, func(i, j int) bool {
-			a, b := es[i], es[j]
-			if isIndex(a.Name()) != isIndex(b.Name()) {
-				return isIndex(a.Name())
+			if isIndex(es[i].Name()) != isIndex(es[j].Name()) {
+				return isIndex(es[i].Name())
 			}
-			return naturalLess(a.Name(), b.Name())
+			return naturalLess(es[i].Name(), es[j].Name())
 		})
 		for _, e := range es {
 			if strings.HasPrefix(e.Name(), ".") || e.Type()&os.ModeSymlink != 0 {
@@ -347,48 +364,73 @@ func (r *Registry) Scan(id string) (Scan, error) {
 			}
 			rel := path.Join(dir, e.Name())
 			if e.IsDir() {
+				scan.directories = append(scan.directories, rel)
 				if err := walk(rel); err != nil {
 					return err
 				}
 			} else if isMarkdown(rel) {
-				d, err := r.documentAt(v, rel)
+				info, err := e.Info()
+				if err != nil || !info.Mode().IsRegular() {
+					scan.Skipped++
+					continue
+				}
+				stamp, err := statStamp(filepath.Join(p, e.Name()), info)
 				if err != nil {
 					scan.Skipped++
+					continue
+				}
+				item, ok := c.files[rel]
+				if !ok || item.stamp != stamp || c.documents[rel].Version != item.document.Version {
+					item = scannedFile{stamp: stamp}
+					if r.testHook != nil {
+						if err := r.testHook("scan-read"); err != nil {
+							return err
+						}
+					}
+					b, err := readBytes(v.Root, rel)
+					if err == nil && utf8.Valid(b) {
+						item.document = c.parse(v, rel, b)
+					} else {
+						delete(c.documents, rel)
+					}
+				}
+				files[rel] = item
+				if item.document.URI == "" {
+					scan.Skipped++
 				} else {
-					scan.Documents = append(scan.Documents, d)
+					scan.Documents = append(scan.Documents, item.document)
 				}
 			}
 		}
 		return nil
 	}
-	err = walk("")
-	if err == nil {
-		seen := map[string]bool{}
-		for _, doc := range scan.Documents {
-			seen[doc.URI] = true
-		}
-		for uri := range r.cache {
-			if strings.HasPrefix(uri, ResourceURI(id, "")) && !seen[uri] {
-				delete(r.cache, uri)
-			}
+	if err = walk(""); err != nil {
+		return scan, err
+	}
+	for rel := range c.documents {
+		if _, ok := files[rel]; !ok {
+			delete(c.documents, rel)
 		}
 	}
-	return scan, err
+	c.files = files
+	if sameInventory(c.scan, scan) {
+		scan = c.scan
+	} else {
+		scan.index = newVaultIndex(scan.Documents)
+		c.scan = scan
+	}
+	if r.requestScans != nil {
+		r.requestScans[id] = scan
+	}
+	return scan, nil
 }
+
 func (r *Registry) Notes(id string) ([]Document, error) {
 	scan, err := r.Scan(id)
 	if err != nil {
 		return nil, err
 	}
-	groups := groupNotes(scan.Documents)
-	out := []Document{}
-	for _, d := range scan.Documents {
-		f := groups[d.URI]
-		if f.Primary.URI == d.URI {
-			out = append(out, withLanguages(f.Primary, f))
-		}
-	}
-	return out, nil
+	return scan.index.notes, nil
 }
 func (r *Registry) ListVaults() (map[string]any, error) {
 	vs, err := r.Vaults()
@@ -402,7 +444,7 @@ func (r *Registry) ListVaults() (map[string]any, error) {
 		scan, e := r.Scan(v.ID)
 		if e == nil {
 			seen := map[string]bool{}
-			for _, f := range groupNotes(scan.Documents) {
+			for _, f := range scan.index.groups {
 				seen[f.Primary.URI] = true
 			}
 			m["available"] = true
@@ -424,7 +466,7 @@ func (r *Registry) ListDocuments(id, dir string, cursor, limit int) (map[string]
 	if err != nil {
 		return nil, err
 	}
-	groups := groupNotes(scan.Documents)
+	groups := scan.index.groups
 	docs := []any{}
 	for _, d := range scan.Documents {
 		f := groups[d.URI]
@@ -471,7 +513,7 @@ func (r *Registry) Browse(id, dir string) (Browse, error) {
 	for _, e := range es {
 		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") && e.Type()&os.ModeSymlink == 0 {
 			rel := path.Join(dir, e.Name())
-			version, count, _ := snapshot(filepath.Join(p, e.Name()))
+			version, count, _ := r.browseSnapshot(filepath.Join(p, e.Name()))
 			folder := Folder{Name: e.Name(), Relative: rel, URI: ResourceURI(id, rel), Version: version, FileCount: count}
 			for _, d := range notes {
 				if strings.HasPrefix(d.Relative, rel+"/") {
@@ -485,37 +527,15 @@ func (r *Registry) Browse(id, dir string) (Browse, error) {
 	return out, nil
 }
 func (r *Registry) Directories(id string) ([]string, error) {
-	v, err := r.Vault(id)
-	if err != nil {
-		return nil, err
-	}
-	out := []string{""}
-	var walk func(string) error
-	walk = func(dir string) error {
-		p, err := securePath(v.Root, dir, true)
-		if err != nil {
-			return err
-		}
-		es, err := os.ReadDir(p)
-		if err != nil {
-			return err
-		}
-		sort.Slice(es, func(i, j int) bool { return naturalLess(es[i].Name(), es[j].Name()) })
-		for _, e := range es {
-			if e.IsDir() && e.Type()&os.ModeSymlink == 0 && !strings.HasPrefix(e.Name(), ".") {
-				rel := path.Join(dir, e.Name())
-				out = append(out, rel)
-				if err := walk(rel); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	}
-	err = walk("")
-	return out, err
+	scan, err := r.Scan(id)
+	return scan.directories, err
 }
-func snapshot(root string) (string, int, error) {
+
+func snapshot(root string) (string, int, error) { return fingerprintTree(root, fileDigest) }
+func (r *Registry) browseSnapshot(root string) (string, int, error) {
+	return fingerprintTree(root, r.cachedFingerprint)
+}
+func fingerprintTree(root string, hashFile func(string) (string, error)) (string, int, error) {
 	var parts []any
 	count := 0
 	err := filepath.WalkDir(root, func(p string, e os.DirEntry, err error) error {
@@ -532,7 +552,7 @@ func snapshot(root string) (string, int, error) {
 			stamp = append(stamp, info.Size(), info.ModTime().UnixNano())
 		}
 		if info.Mode().IsRegular() {
-			hash, err := fileDigest(p)
+			hash, err := hashFile(p)
 			if err != nil {
 				return err
 			}

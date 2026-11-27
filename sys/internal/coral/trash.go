@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 )
 
 type VaultState struct {
@@ -15,6 +16,7 @@ type VaultState struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Root        string `json:"root"`
+	Directory   string `json:"directory,omitempty"`
 	Source      string `json:"source"`
 	State       string `json:"state"`
 	DeletedAt   string `json:"deleted_at"`
@@ -65,22 +67,53 @@ func (r *Registry) vaultState(id string) (VaultState, error) {
 		return s, fail(400, "知识库回收记录无效")
 	}
 	if s.Source == "managed" {
-		name := strings.ToLower(s.Name)
-		if !validVaultName.MatchString(name) {
-			name = id
+		directory := s.Directory
+		if directory != "" && !validVaultName.MatchString(directory) {
+			return s, fail(400, "知识库回收目录无效")
 		}
-		s.Root = filepath.Join(r.Config.DataDir, "obsdian", name)
+		if directory == "" {
+			// Older records stored the original directory only in Root.
+			directory = filepath.Base(filepath.Clean(s.Root))
+			if !validVaultName.MatchString(directory) {
+				directory = strings.ToLower(s.Name)
+				if !validVaultName.MatchString(directory) {
+					directory = id
+				}
+			}
+		}
+		s.Root = filepath.Join(r.Config.DataDir, "obsdian", directory)
 	}
 	return s, nil
 }
 func (r *Registry) CreateVault(name, description string) (Vault, error) {
+	return r.CreateVaultWithDisplayName(name, description, "")
+}
+func validVaultDisplayName(name string) bool {
+	return name != "" && utf16Len(name) <= 200 && strings.IndexFunc(name, unicode.IsControl) < 0
+}
+func (r *Registry) CreateNamedVault(displayName, description string) (Vault, error) {
+	displayName = strings.TrimSpace(displayName)
+	if !validVaultDisplayName(displayName) {
+		return Vault{}, fail(400, "请输入知识库名称，最多 200 字，不能包含控制字符")
+	}
+	id := strings.ToLower(displayName)
+	if !validVaultName.MatchString(id) || id == "default" {
+		id = "vault-" + newID()
+	}
+	return r.CreateVaultWithDisplayName(id, description, displayName)
+}
+func (r *Registry) CreateVaultWithDisplayName(name, description, displayName string) (Vault, error) {
 	name = strings.ToLower(strings.TrimSpace(name))
 	description = strings.TrimSpace(description)
+	displayName = strings.TrimSpace(displayName)
 	if !validVaultName.MatchString(name) || name == "default" {
 		return Vault{}, fail(400, "仓库名称须以英文字母开头，仅包含英文字母、数字、连字符或下划线，最多 64 字符")
 	}
 	if utf16Len(description) > 2000 {
 		return Vault{}, fail(400, "简介最多 2000 字")
+	}
+	if displayName != "" && !validVaultDisplayName(displayName) {
+		return Vault{}, fail(400, "知识库名称最多 200 字，不能包含控制字符")
 	}
 	vs, err := r.Vaults()
 	if err != nil {
@@ -114,18 +147,37 @@ func (r *Registry) CreateVault(name, description string) (Vault, error) {
 	if err = os.Mkdir(filepath.Join(root, ".obsidian"), 0755); err != nil {
 		return Vault{}, err
 	}
-	if err = saveJSON(filepath.Join(root, ".coral-vault.json"), map[string]string{"id": name, "description": description}); err != nil {
+	manifest := map[string]string{"id": name, "description": description}
+	if displayName != "" {
+		manifest["name"] = displayName
+	}
+	if err = saveJSON(filepath.Join(root, ".coral-vault.json"), manifest); err != nil {
 		return Vault{}, err
 	}
 	if dir, e := r.stateDir(name); e == nil {
 		_ = os.Remove(filepath.Join(dir, "state.json"))
 	}
-	return Vault{name, name, description, root}, nil
+	if displayName == "" {
+		displayName = name
+	}
+	return Vault{name, displayName, description, root}, nil
 }
+
+type TrashReceipt struct {
+	Scope   string `json:"scope"`
+	VaultID string `json:"vault_id"`
+	EntryID string `json:"entry_id,omitempty"`
+	Version string `json:"version"`
+}
+
 func (r *Registry) DeleteVault(id, version string) error {
+	_, err := r.DeleteVaultWithReceipt(id, version)
+	return err
+}
+func (r *Registry) DeleteVaultWithReceipt(id, version string) (TrashReceipt, error) {
 	vs, err := r.Vaults()
 	if err != nil {
-		return err
+		return TrashReceipt{}, err
 	}
 	var v Vault
 	for _, item := range vs {
@@ -134,23 +186,23 @@ func (r *Registry) DeleteVault(id, version string) error {
 		}
 	}
 	if v.ID == "" {
-		return fail(404, "知识库不存在")
+		return TrashReceipt{}, fail(404, "知识库不存在")
 	}
 	if version == "" || digest(jsonBytes(v)) != version {
-		return fail(409, "知识库信息已变化，请刷新后重试")
+		return TrashReceipt{}, fail(409, "知识库信息已变化，请刷新后重试")
 	}
 	_, external := r.Config.Vaults[id]
 	if !external {
 		info, e := os.Lstat(v.Root)
 		if e != nil {
-			return e
+			return TrashReceipt{}, e
 		}
 		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return fail(400, "不能移动符号链接形式的知识库")
+			return TrashReceipt{}, fail(400, "不能移动符号链接形式的知识库")
 		}
 		target, e := filepath.EvalSymlinks(v.Root)
 		if e != nil {
-			return e
+			return TrashReceipt{}, e
 		}
 		for _, other := range vs {
 			if other.ID == id {
@@ -158,29 +210,32 @@ func (r *Registry) DeleteVault(id, version string) error {
 			}
 			root, e := filepath.EvalSymlinks(other.Root)
 			if e == nil && (root == target || strings.HasPrefix(root, target+string(filepath.Separator))) {
-				return fail(400, "该知识库包含其他已注册知识库，请先移除其注册")
+				return TrashReceipt{}, fail(400, "该知识库包含其他已注册知识库，请先移除其注册")
 			}
 		}
 	}
 	dir, err := r.stateDir(id)
 	if err != nil {
-		return err
+		return TrashReceipt{}, err
 	}
 	source := "managed"
 	if external {
 		source = "external"
 	}
-	s := VaultState{id, v.Name, v.Description, v.Root, source, "trash", time.Now().UTC().Format(time.RFC3339Nano)}
+	s := VaultState{ID: id, Name: v.Name, Description: v.Description, Root: v.Root, Source: source, State: "trash", DeletedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if !external {
+		s.Directory = filepath.Base(v.Root)
+	}
 	if err = saveJSON(filepath.Join(dir, "state.json"), s); err != nil {
-		return err
+		return TrashReceipt{}, err
 	}
 	if !external {
 		if err = os.Rename(v.Root, filepath.Join(dir, "content")); err != nil {
 			_ = os.Remove(filepath.Join(dir, "state.json"))
-			return err
+			return TrashReceipt{}, err
 		}
 	}
-	return nil
+	return TrashReceipt{Scope: "vault", VaultID: id, Version: digest(jsonBytes(s))}, nil
 }
 func (r *Registry) RestoreVault(id, version string, purge bool) error {
 	s, err := r.vaultState(id)
@@ -408,62 +463,66 @@ func transferFile(root, from, to, version string) error {
 	return nil
 }
 func (r *Registry) Delete(uri, version, noteVersion string, directory bool) error {
+	_, err := r.DeleteWithReceipt(uri, version, noteVersion, directory)
+	return err
+}
+func (r *Registry) DeleteWithReceipt(uri, version, noteVersion string, directory bool) (TrashReceipt, error) {
 	e, err := r.Entry(uri)
 	if err != nil {
-		return err
+		return TrashReceipt{}, err
 	}
 	if directory != (e.Kind == "directory") {
-		return fail(400, "资源类型不匹配")
+		return TrashReceipt{}, fail(400, "资源类型不匹配")
 	}
 	if version == "" || version != e.Version {
-		return fail(409, "内容已修改，请刷新后重试")
+		return TrashReceipt{}, fail(409, "内容已修改，请刷新后重试")
 	}
 	v, err := r.Vault(e.VaultID)
 	if err != nil {
-		return err
+		return TrashReceipt{}, err
 	}
 	members := []Document{}
 	if directory {
 		vs, err := r.Vaults()
 		if err != nil {
-			return err
+			return TrashReceipt{}, err
 		}
 		p, err := securePath(v.Root, e.Relative, true)
 		if err != nil {
-			return err
+			return TrashReceipt{}, err
 		}
 		for _, other := range vs {
 			root, err := filepath.EvalSymlinks(other.Root)
 			if err == nil && (root == p || strings.HasPrefix(root, p+string(filepath.Separator))) {
-				return fail(400, "不能删除知识库根目录或包含其他知识库的目录")
+				return TrashReceipt{}, fail(400, "不能删除知识库根目录或包含其他知识库的目录")
 			}
 		}
 	} else {
 		f, err := r.Family(uri)
 		if err != nil {
-			return err
+			return TrashReceipt{}, err
 		}
 		if noteVersion != "" && noteVersion != f.Signature {
-			return fail(409, "笔记的语言版本已变化，请刷新后重试")
+			return TrashReceipt{}, fail(409, "笔记的语言版本已变化，请刷新后重试")
 		}
 		if f.Issue != "" {
-			return fail(409, f.Issue)
+			return TrashReceipt{}, fail(409, f.Issue)
 		}
 		members = f.Versions
 		e.Relative = f.Primary.Relative
 	}
 	trash := filepath.Join(v.Root, ".trash")
 	if err = os.Mkdir(trash, 0755); err != nil && !os.IsExist(err) {
-		return err
+		return TrashReceipt{}, err
 	}
 	info, err := os.Lstat(trash)
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return fail(400, "知识库回收站不可用")
+		return TrashReceipt{}, fail(400, "知识库回收站不可用")
 	}
 	batchID := newID()
 	batch := filepath.Join(trash, batchID)
 	if err = os.Mkdir(batch, 0755); err != nil {
-		return err
+		return TrashReceipt{}, err
 	}
 	record := TrashRecord{e.Relative, "file", time.Now().UTC().Format(time.RFC3339Nano), nil}
 	if directory {
@@ -474,26 +533,26 @@ func (r *Registry) Delete(uri, version, noteVersion string, directory bool) erro
 		}
 	}
 	if err = saveJSON(filepath.Join(batch, ".coral-trash.json"), record); err != nil {
-		return err
+		return TrashReceipt{}, err
 	}
 	if directory {
 		source, err := securePath(v.Root, e.Relative, true)
 		if err != nil {
-			return err
+			return TrashReceipt{}, err
 		}
 		current, _, err := snapshot(source)
 		if err != nil {
-			return err
+			return TrashReceipt{}, err
 		}
 		if current != version {
-			return fail(409, "文件夹内容已修改，请刷新后重试")
+			return TrashReceipt{}, fail(409, "文件夹内容已修改，请刷新后重试")
 		}
 		target := filepath.Join(batch, filepath.FromSlash(e.Relative))
 		if err = os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-			return err
+			return TrashReceipt{}, err
 		}
 		if err = os.Rename(source, target); err != nil {
-			return err
+			return TrashReceipt{}, err
 		}
 	} else {
 		moves := []fileMove{}
@@ -502,9 +561,9 @@ func (r *Registry) Delete(uri, version, noteVersion string, directory bool) erro
 		}
 		if err = r.transferBatch(v, moves, batchID); err != nil {
 			if cleanup := syncTrashRecord(batch, record); cleanup != nil {
-				return addRecoveryConflict(err, ResourceURI(v.ID, record.Path), "无法更新回收记录，请按操作编号检查保留的文件")
+				return TrashReceipt{}, addRecoveryConflict(err, ResourceURI(v.ID, record.Path), "无法更新回收记录，请按操作编号检查保留的文件")
 			}
-			return err
+			return TrashReceipt{}, err
 		}
 	}
 	paths := []string{e.Relative}
@@ -512,7 +571,11 @@ func (r *Registry) Delete(uri, version, noteVersion string, directory bool) erro
 		paths = append(paths, d.Relative)
 	}
 	r.history(v, paths, "删除："+e.Relative)
-	return nil
+	completed, err := r.trashBatch(v.ID, batchID)
+	if err != nil {
+		return TrashReceipt{}, err
+	}
+	return TrashReceipt{Scope: "item", VaultID: v.ID, EntryID: batchID, Version: completed.Version}, nil
 }
 
 type fileMove struct{ From, To, Version string }

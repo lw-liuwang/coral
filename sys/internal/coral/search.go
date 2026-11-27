@@ -60,9 +60,27 @@ func searchTokens(text string) []searchToken {
 type searchHit struct{ Start, End, Term int }
 
 func hits(tokens []searchToken, terms []string) []searchHit {
+	phrases := make([][]searchToken, len(terms))
+	for n, term := range terms {
+		phrases[n] = searchTokens(term)
+	}
+	return queryHits(tokens, phrases)
+}
+
+func matches(text string, terms []string) bool {
+	if len(terms) == 0 {
+		return false
+	}
+	found := map[int]bool{}
+	for _, h := range hits(searchTokens(text), terms) {
+		found[h.Term] = true
+	}
+	return len(found) == len(terms)
+}
+
+func queryHits(tokens []searchToken, phrases [][]searchToken) []searchHit {
 	out := []searchHit{}
-	for t, term := range terms {
-		phrase := searchTokens(term)
+	for t, phrase := range phrases {
 		if len(phrase) == 0 {
 			continue
 		}
@@ -90,17 +108,7 @@ func hits(tokens []searchToken, terms []string) []searchHit {
 	})
 	return out
 }
-func matches(text string, terms []string) bool {
-	if len(terms) == 0 {
-		return false
-	}
-	found := map[int]bool{}
-	for _, h := range hits(searchTokens(text), terms) {
-		found[h.Term] = true
-	}
-	return len(found) == len(terms)
-}
-func searchRank(d Document, terms []string) int {
+func searchRankMatched(d Document, terms []string, titleMatched bool) int {
 	normalize := func(s string) string { return strings.ToLower(strings.Join(strings.Fields(s), " ")) }
 	query := normalize(strings.Join(terms, " "))
 	filename := path.Base(d.Relative)
@@ -109,13 +117,12 @@ func searchRank(d Document, terms []string) int {
 			return 0
 		}
 	}
-	if matches(d.Title+"\n"+d.Relative, terms) {
+	if titleMatched {
 		return 1
 	}
 	return 2
 }
-func snippet(d Document, terms []string) (string, int) {
-	all := hits(searchTokens(d.Body), terms)
+func snippetHits(d Document, all []searchHit) (string, int) {
 	bestStart, bestCount, bestSpan := 0, 0, math.MaxInt
 	left := 0
 	counts := map[int]int{}
@@ -164,10 +171,15 @@ func (r *Registry) Search(query, vaultID string, limit, cursor int) (map[string]
 		vs = []Vault{v}
 	}
 	terms := strings.Fields(query)
+	phrases := make([][]searchToken, len(terms))
+	for n, term := range terms {
+		phrases[n] = searchTokens(term)
+	}
 	type candidate struct {
 		Doc   Document
 		Rank  int
 		Score float64
+		Hits  []searchHit
 	}
 	candidates := []candidate{}
 	unavailable := []string{}
@@ -182,25 +194,27 @@ func (r *Registry) Search(query, vaultID string, limit, cursor int) (map[string]
 			continue
 		}
 		skipped += scan.Skipped
-		groups := groupNotes(scan.Documents)
+		groups := scan.index.groups
 		for _, d := range scan.Documents {
 			f := groups[d.URI]
 			if f.Primary.URI != d.URI {
 				continue
 			}
-			matched := true
-			for _, term := range terms {
-				if !matches(d.Title+"\n"+d.Relative, []string{term}) && !matches(d.Body, []string{term}) {
-					matched = false
-					break
-				}
+			index := d.searchIndex()
+			bodyHits, titleHits := queryHits(index.body, phrases), queryHits(index.title, phrases)
+			found, titleFound := map[int]bool{}, map[int]bool{}
+			for _, h := range bodyHits {
+				found[h.Term] = true
 			}
-			if !matched {
+			for _, h := range titleHits {
+				found[h.Term] = true
+				titleFound[h.Term] = true
+			}
+			if len(found) != len(terms) {
 				continue
 			}
-			bodyTokens := searchTokens(d.Body)
-			score := float64(len(hits(bodyTokens, terms))) / (1 + 0.75*float64(len(bodyTokens))/500)
-			candidates = append(candidates, candidate{withLanguages(d, f), searchRank(d, terms), score})
+			score := float64(len(bodyHits)) / (1 + 0.75*float64(len(index.body))/500)
+			candidates = append(candidates, candidate{withLanguages(d, f), searchRankMatched(d, terms, len(titleFound) == len(terms)), score, bodyHits})
 		}
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
@@ -216,7 +230,7 @@ func (r *Registry) Search(query, vaultID string, limit, cursor int) (map[string]
 	results := []any{}
 	for _, c := range candidates[min(cursor, len(candidates)):min(cursor+limit, len(candidates))] {
 		m := c.Doc.Public()
-		m["snippet"], m["start_line"] = snippet(c.Doc, terms)
+		m["snippet"], m["start_line"] = snippetHits(c.Doc, c.Hits)
 		results = append(results, m)
 	}
 	var next any

@@ -24,8 +24,8 @@ after(async () => { await browser?.close(); });
 const fixture = (editing: boolean, isNew = false) => `<!doctype html><html><head><meta charset="utf-8"><meta name="editor-style-nonce" content="test-nonce"><style>[hidden]{display:none!important}.cm-editor{height:250px}.topbar{height:40px}</style></head><body>
   <header class="topbar"></header>${editing ? `<button type="submit" form="editor-form">保存</button><form id="editor-form" action="/${isNew ? 'new' : 'edit'}" method="post">
   ${isNew ? '<input name="title" value=""><input name="directory" value="">' : '<input name="uri" value="coral://vault/default/note.md"><input name="version" value="v1"><input id="preview-uri" value="coral://vault/default/note.md">'}
-  <input id="preview-vault" value="default"><section class="writing-surface"><div class="draft-notice" hidden><button type="button" data-restore-draft>恢复草稿</button><button type="button" data-discard-draft>丢弃草稿</button></div><textarea id="editor" name="content">${isNew ? '' : '# Original\n\nOriginal body'}</textarea><div id="markdown-editor"></div><div id="preview"></div><button type="button" data-focus-editor>专注模式</button><div id="save-status"></div><div id="word-count"></div><div id="save-error" hidden></div><div id="conflict-actions" hidden><a data-latest-document href="/document?uri=coral%3A%2F%2Fvault%2Fdefault%2Fnote.md" target="_blank">打开最新版本</a><button type="button" data-download-draft>下载当前草稿</button></div></section></form>`
-    : '<div data-document-update-error hidden></div><article data-reading-document="coral://vault/default/note.md" data-reading-directory="coral://vault/default/" data-reading-version="v1"><h2 id="first">First</h2><div style="height:1800px">Body</div><h2 id="second">Second</h2><div style="height:1800px">End</div></article>'}</body></html>`;
+  <input id="preview-vault" value="default"><section class="writing-surface"><div class="draft-notice" hidden><span data-draft-message>有未保存的本地草稿</span><button type="button" data-restore-draft>恢复草稿</button><button type="button" data-discard-draft>丢弃草稿</button></div><textarea id="editor" name="content">${isNew ? '' : '# Original\n\nOriginal body'}</textarea><div id="markdown-editor"></div><div id="preview"></div><button type="button" data-focus-editor>专注模式</button><div id="save-status"></div><div id="word-count"></div><div id="save-error" hidden></div><div id="conflict-actions" hidden><a data-latest-document href="/document?uri=coral%3A%2F%2Fvault%2Fdefault%2Fnote.md" target="_blank">打开最新版本</a><button type="button" data-download-draft>下载当前草稿</button></div></section></form>`
+    : '<div data-document-update-error hidden></div><div data-reading-update hidden style="position:fixed;bottom:12px;right:12px"><span>笔记已更新</span><button type="button" data-load-update>加载更新</button></div><article data-reading-document="coral://vault/default/note.md" data-reading-directory="coral://vault/default/" data-reading-version="v1"><h2 id="first">First</h2><div style="height:1800px">Body</div><h2 id="second">Second</h2><div style="height:1800px">End</div></article>'}</body></html>`;
 
 async function mount(page: Page, editing: boolean) {
   await page.addScriptTag({ content: bundle });
@@ -35,7 +35,7 @@ async function mount(page: Page, editing: boolean) {
   }, editing);
 }
 
-test('new notes have independent persistent draft IDs and migrate an old draft only after restoration', { skip: !available, timeout: 30000 }, async () => {
+test('new notes keep independent editor IDs and auto-recover a migrated draft while preserving its legacy copy', { skip: !available, timeout: 30000 }, async () => {
   const context = await browser.newContext();
   try {
     await context.route('http://coral.test/**', route => route.fulfill({ contentType: route.request().url().includes('/api/') ? 'application/json' : 'text/html',
@@ -45,15 +45,19 @@ test('new notes have independent persistent draft IDs and migrate an old draft o
     await first.evaluate(() => localStorage.setItem('coral:draft:new:default', JSON.stringify({ content: 'Legacy draft', title: 'Legacy title', directory: 'old', version: '', updated: 1 })));
     await mount(first, true);
     assert.equal(await first.locator('.draft-notice').isVisible(), true);
+    assert.equal(await first.locator('[data-draft-message]').textContent(), '已恢复本地草稿');
+    assert.equal(await first.locator('[data-restore-draft]').isHidden(), true);
     const firstId = new URL(first.url()).searchParams.get('draft');
     assert.ok(firstId);
     await second.goto('http://coral.test/new?vault=default');
     await mount(second, true);
     const secondId = new URL(second.url()).searchParams.get('draft');
     assert.ok(secondId && secondId !== firstId);
-    await first.locator('[data-restore-draft]').click();
+    assert.equal(await second.locator('[name="title"]').inputValue(), '');
     assert.equal(await first.locator('.cm-content').textContent(), 'Legacy draft');
-    assert.equal(await first.evaluate(() => localStorage.getItem('coral:draft:new:default')), null);
+    const legacy = await first.evaluate(() => localStorage.getItem('coral:draft:new:default'));
+    assert.equal(JSON.parse(legacy!).content, 'Legacy draft');
+    assert.equal(await first.evaluate(() => localStorage.getItem('coral:migrated-draft:coral:draft:new:default')), legacy);
     await second.locator('[name="title"]').fill('Second title');
     await second.locator('.cm-content').fill('Independent second draft');
     await second.waitForFunction(() => document.querySelector('#save-status')?.textContent === '草稿已存于本机');
@@ -61,8 +65,10 @@ test('new notes have independent persistent draft IDs and migrate an old draft o
     await first.reload();
     await mount(first, true);
     assert.equal(new URL(first.url()).searchParams.get('draft'), firstId);
-    await first.locator('[data-restore-draft]').click();
+    assert.equal(await first.locator('[data-restore-draft]').isHidden(), true);
     assert.equal(await first.locator('.cm-content').textContent(), 'Legacy draft');
+    assert.equal(await first.locator('[name="title"]').inputValue(), 'Legacy title');
+    assert.equal(await first.locator('[name="directory"]').inputValue(), 'old');
     assert.equal(await second.locator('.cm-content').textContent(), 'Independent second draft');
   } finally { await context.close(); }
 });
@@ -96,8 +102,14 @@ test('edits made during saving remain a local draft and conflicts retain the old
     release();
     await page.waitForFunction(() => document.querySelector('#save-status')?.textContent === '草稿已存于本机');
     assert.equal(await page.locator('[name="version"]').inputValue(), 'v2');
-    const draft = await page.evaluate(() => JSON.parse(localStorage.getItem('coral:draft:coral://vault/default/note.md')!));
+    const drafts = await page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('coral:draft:v2:'))
+      .map(key => JSON.parse(localStorage.getItem(key)!)).filter(record => record.resource === 'coral://vault/default/note.md' && record.state === 'active'));
+    assert.equal(drafts.length, 1);
+    const draft = drafts[0];
     assert.equal(draft.content, '---\ntitle: Current draft\n---\nComplete current body');
+    assert.equal(draft.version, 'v2');
+    assert.equal(draft.editor, new URL(page.url()).searchParams.get('draft'));
+    assert.equal(typeof draft.writer, 'string');
     await page.getByRole('button', { name: '保存', exact: true }).click();
     await page.waitForFunction(() => document.querySelector('#save-status')?.textContent === '保存失败');
     assert.equal(await page.locator('#conflict-actions').isVisible(), true);
@@ -112,7 +124,7 @@ test('edits made during saving remain a local draft and conflicts retain the old
   } finally { await context.close(); }
 });
 
-test('reading restores an anchor-relative position, honors explicit navigation and reports update failures', { skip: !available, timeout: 30000 }, async () => {
+test('reading preserves position and selection until an explicit update, honors navigation and reports failures', { skip: !available, timeout: 30000 }, async () => {
   const context = await browser.newContext();
   try {
     let version = 'v1', fail = false;
@@ -137,8 +149,21 @@ test('reading restores an anchor-relative position, honors explicit navigation a
     await page.waitForFunction(() => !document.querySelector<HTMLElement>('[data-document-update-error]')!.hidden);
     assert.equal(await page.locator('[data-document-update-error]').textContent(), '文档不存在');
     fail = false; version = 'v2';
-    const reload = page.waitForEvent('domcontentloaded');
+    let navigations = 0;
+    page.on('framenavigated', () => navigations++);
+    await page.evaluate(() => {
+      const range = document.createRange(); range.selectNodeContents(document.querySelector('#second')!);
+      getSelection()!.removeAllRanges(); getSelection()!.addRange(range);
+    });
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await page.waitForFunction(() => !document.querySelector<HTMLElement>('[data-reading-update]')!.hidden);
+    assert.equal(navigations, 0);
+    assert.equal(await page.locator('article').getAttribute('data-reading-version'), 'v1');
+    assert.equal(await page.evaluate(() => getSelection()!.toString()), 'Second');
+    assert.equal(await page.evaluate(() => scrollY), y);
+    assert.equal(await page.locator('[data-document-update-error]').isHidden(), true);
+    const reload = page.waitForEvent('domcontentloaded');
+    await page.locator('[data-load-update]').click();
     await reload;
     await mount(page, false);
     await page.waitForFunction(expected => Math.abs(window.scrollY - expected) < 3, y + 400);

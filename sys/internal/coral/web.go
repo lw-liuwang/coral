@@ -27,6 +27,7 @@ type App struct {
 	nonce      string
 	static     http.Handler
 	mcpHandler http.Handler
+	assetTags  map[string]string
 }
 
 func NewApp(config Config) (*App, error) {
@@ -46,6 +47,23 @@ func NewApp(config Config) (*App, error) {
 	app := &App{Registry: r, MCP: server, nonce: base64.StdEncoding.EncodeToString(b[:]), static: http.StripPrefix("/static/", http.FileServer(http.FS(web)))}
 	if _, err = fs.Stat(web, "client.js"); err != nil {
 		return nil, fmt.Errorf("web assets missing: run npm run build:assets before go build")
+	}
+	app.assetTags = map[string]string{"/static/highlight.css": `"` + digest([]byte(syntaxCSS)) + `"`}
+	if err := fs.WalkDir(web, ".", func(name string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		content, err := fs.ReadFile(web, name)
+		if err != nil {
+			return err
+		}
+		app.assetTags["/static/"+name] = `"` + digest(content) + `"`
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	app.mcpHandler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
 	return app, nil
@@ -81,21 +99,40 @@ func (a *App) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if strings.HasPrefix(req.URL.Path, "/static/") {
-		if req.URL.Path == "/static/highlight.css" {
-			w.Header().Set("Content-Type", "text/css; charset=utf-8")
-			_, _ = io.WriteString(w, syntaxCSS)
-			return
-		}
 		if req.URL.Path == "/static/mermaid.html" {
 			w.Header().Set("Content-Security-Policy", `default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'self'; base-uri 'none'; form-action 'none'; sandbox allow-scripts`)
 		}
 		if req.URL.Path == "/static/html-frame.html" {
 			w.Header().Set("Content-Security-Policy", `default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; frame-src 'none'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'; sandbox allow-scripts`)
 		}
+		if tag := a.assetTags[req.URL.Path]; tag != "" {
+			w.Header().Set("ETag", tag)
+			w.Header().Set("Cache-Control", "no-cache")
+			if strings.HasPrefix(req.URL.Path, "/static/chunks/") {
+				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			}
+			if req.Method == "GET" || req.Method == "HEAD" {
+				for _, candidate := range strings.Split(req.Header.Get("If-None-Match"), ",") {
+					if candidate = strings.TrimSpace(candidate); candidate == "*" || strings.TrimPrefix(candidate, "W/") == tag {
+						w.WriteHeader(http.StatusNotModified)
+						return
+					}
+				}
+			}
+		}
+		if req.URL.Path == "/static/highlight.css" {
+			w.Header().Set("Content-Type", "text/css; charset=utf-8")
+			_, _ = io.WriteString(w, syntaxCSS)
+			return
+		}
+
 		a.static.ServeHTTP(w, req)
 		return
 	}
-	if err := a.Registry.access(req.Context(), req.Method == "POST", func() error { return a.route(w, req) }); err != nil {
+	readOnly := req.Method != "POST" || req.URL.Path == "/api/preview"
+	scoped := *a
+	scoped.Registry = a.Registry.scoped(readOnly)
+	if err := scoped.Registry.access(req.Context(), !readOnly, func() error { return scoped.route(w, req) }); err != nil {
 		a.writeError(w, req, err)
 	}
 }
@@ -186,7 +223,7 @@ func (a *App) route(w http.ResponseWriter, req *http.Request) error {
 		switch req.URL.Path {
 		case "/":
 			if _, ok := q["vault"]; !ok {
-				return send(r.catalog(a.nonce, s("trashed") == "1"))
+				return send(r.catalog(a.nonce, s("trashed") == "1", s("result")))
 			}
 			return send(r.home(id, s("directory"), a.nonce, q))
 		case "/vaults/new":
@@ -213,7 +250,7 @@ func (a *App) route(w http.ResponseWriter, req *http.Request) error {
 				return fail(400, "语言仅支持中文或英文")
 			}
 			for _, d := range f.Versions {
-				if docLanguage(d) == language {
+				if f.Grouped && docLanguage(d) == language {
 					redirect(withReturn(viewURL(d.URI), s("return_to")))
 					return nil
 				}
@@ -335,6 +372,12 @@ func (a *App) route(w http.ResponseWriter, req *http.Request) error {
 	uri = s("uri")
 	returnTo := searchReturn(s("return_to"))
 	jsonResponse := req.Header.Get("Accept") == "application/json"
+	if !jsonResponse && s("confirmed") != "1" {
+		switch req.URL.Path {
+		case "/delete", "/delete-directory", "/vaults/delete", "/trash/purge", "/trash/empty":
+			return send(r.confirmationPage(req.URL.Path, a.nonce, fields))
+		}
+	}
 	formFailure := func(err error, render func() (string, error)) error {
 		if jsonResponse {
 			return err
@@ -357,18 +400,18 @@ func (a *App) route(w http.ResponseWriter, req *http.Request) error {
 	}
 	switch req.URL.Path {
 	case "/vaults/new":
-		v, err := r.CreateVault(s("name"), s("description"))
+		v, err := r.CreateNamedVault(s("name"), s("description"))
 		if err != nil {
 			return formFailure(err, func() (string, error) { return r.simpleForm("vault", "", "", a.nonce, fields, appError(err).Message) })
 		}
 		redirect("/?vault=" + encodeURI(v.ID))
 		return nil
 	case "/vaults/delete":
-		if err = r.DeleteVault(s("vault"), s("version")); err != nil {
+		receipt, err := r.DeleteVaultWithReceipt(s("vault"), s("version"))
+		if err != nil {
 			return err
 		}
-		redirect("/?trashed=1")
-		return nil
+		return a.finishWebResult(w, req, WebResult{Trash: &receipt}, "/")
 	case "/directories/new":
 		if err = r.CreateDirectory(id, s("directory"), s("name")); err != nil {
 			return formFailure(err, func() (string, error) {
@@ -403,6 +446,13 @@ func (a *App) route(w http.ResponseWriter, req *http.Request) error {
 		saved(d)
 		return nil
 	case "/languages/new":
+		if s("derive_language") == "1" && validLanguage(s("source_language")) {
+			language := "en"
+			if s("source_language") == "en" {
+				language = "zh"
+			}
+			fields.Set("language", language)
+		}
 		d, err := r.CreateLanguage(uri, s("language"), s("content"), s("version"), s("source_language"), s("title"))
 		if err != nil {
 			return formFailure(err, func() (string, error) {
@@ -412,6 +462,11 @@ func (a *App) route(w http.ResponseWriter, req *http.Request) error {
 		saved(d)
 		return nil
 	case "/rename", "/move":
+		organizeFailure := func(err error) error {
+			return formFailure(err, func() (string, error) {
+				return r.organizePage(strings.TrimPrefix(req.URL.Path, "/"), uri, a.nonce, fields, appError(err).Message, appError(err).Details)
+			})
+		}
 		entry, err := r.Entry(uri)
 		if err != nil {
 			return err
@@ -422,11 +477,11 @@ func (a *App) route(w http.ResponseWriter, req *http.Request) error {
 				return fail(400, "仅支持移动笔记")
 			}
 			if _, err := safeParts(s("directory"), true); err != nil {
-				return err
+				return organizeFailure(err)
 			}
 			destination = path.Join(s("directory"), entry.Name)
 		} else if err := validName(s("name"), entry.Kind == "document"); err != nil {
-			return err
+			return organizeFailure(err)
 		}
 		var result RelocationResult
 		if req.URL.Path == "/rename" {
@@ -435,9 +490,7 @@ func (a *App) route(w http.ResponseWriter, req *http.Request) error {
 			result, err = r.Relocate(uri, destination, s("version"), s("note_version"), true)
 		}
 		if err != nil {
-			return formFailure(err, func() (string, error) {
-				return r.organizePage(strings.TrimPrefix(req.URL.Path, "/"), uri, a.nonce, fields, appError(err).Message, appError(err).Details)
-			})
+			return organizeFailure(err)
 		}
 		target := directoryURL(result.VaultID, parent(result.Relative)) + "#" + documentAnchor(result.URI)
 		if s("from") == "document" && entry.Kind == "document" {
@@ -468,11 +521,11 @@ func (a *App) route(w http.ResponseWriter, req *http.Request) error {
 		if err != nil {
 			return err
 		}
-		if err = r.Delete(uri, s("version"), s("note_version"), req.URL.Path == "/delete-directory"); err != nil {
+		receipt, err := r.DeleteWithReceipt(uri, s("version"), s("note_version"), req.URL.Path == "/delete-directory")
+		if err != nil {
 			return err
 		}
-		redirect(directoryURL(entry.VaultID, parent(entry.Relative)) + "&deleted=1")
-		return nil
+		return a.finishWebResult(w, req, WebResult{VaultID: entry.VaultID, Trash: &receipt}, directoryURL(entry.VaultID, parent(entry.Relative)))
 	case "/trash/restore", "/trash/purge":
 		purge := req.URL.Path == "/trash/purge"
 		if s("scope") == "vault" {
@@ -521,7 +574,18 @@ func (a *App) route(w http.ResponseWriter, req *http.Request) error {
 		if !frontStart.MatchString(s("markdown")) && s("uri") != "" && current != nil {
 			meta = current.Metadata
 		}
-		rendered, err := RenderMarkdown(body, scan.Documents, current, meta)
+		language := s("language")
+		if language == "" && s("uri") != "" && current != nil && validLanguageMetadata(current.Metadata) {
+			language = docLanguage(*current)
+		}
+		if language != "" {
+			if !validLanguage(language) {
+				return fail(400, "语言仅支持中文或英文")
+			}
+			meta = cloneMap(meta)
+			meta["coral_language"] = language
+		}
+		rendered, err := RenderMarkdown(body, scan.Documents, current, meta, scan.index.links)
 		if err != nil {
 			return err
 		}
@@ -550,43 +614,58 @@ func (a *App) upload(w http.ResponseWriter, req *http.Request) error {
 	if _, err := a.Registry.Vault(id); err != nil {
 		return err
 	}
-	saved, rejected := 0, 0
+	result := WebResult{VaultID: id, Directory: dir, Imports: []ImportOutcome{}}
 	for _, header := range req.MultipartForm.File["files"] {
 		name := header.Filename
-		if strings.HasPrefix(name, ".") || !isMarkdown(name) || header.Size > MaxFileBytes {
-			rejected++
+		item := ImportOutcome{Name: name}
+		if !validUploadName(name) || strings.HasPrefix(name, ".") {
+			item.Reason = "文件名称无效"
+		} else if !isMarkdown(name) {
+			item.Reason = "仅支持 .md 或 .markdown 文件"
+		} else if header.Size > MaxFileBytes {
+			item.Reason = "文件超过 16 MiB 大小限制"
+		}
+		if item.Reason != "" {
+			result.Imports = append(result.Imports, item)
 			continue
 		}
 		f, err := header.Open()
 		if err != nil {
-			return err
+			item.Reason = "文件无法读取，请重试"
+			result.Imports = append(result.Imports, item)
+			continue
 		}
 		b, err := io.ReadAll(io.LimitReader(f, MaxFileBytes+1))
 		_ = f.Close()
 		if err != nil {
-			return err
+			item.Reason = "文件无法读取，请重试"
+			result.Imports = append(result.Imports, item)
+			continue
 		}
-		if len(b) > MaxFileBytes || !utf8.Valid(b) {
-			rejected++
+		if len(b) > MaxFileBytes {
+			item.Reason = "文件超过 16 MiB 大小限制"
+		} else if !utf8.Valid(b) {
+			item.Reason = "文件不是有效的 UTF-8 文本"
+		}
+		if item.Reason != "" {
+			result.Imports = append(result.Imports, item)
 			continue
 		}
 		meta, body, err := parseMarkdown(string(b))
 		if err != nil {
-			rejected++
+			item.Reason = "YAML 属性无效：" + importFailure(err)
+			result.Imports = append(result.Imports, item)
 			continue
 		}
 		stem := stripExtension(name)
-		_, err = a.Registry.Create(id, titleFor(meta, stem), body, meta, stem, dir)
+		d, err := a.Registry.Create(id, titleFor(meta, stem), body, meta, stem, dir)
 		if err != nil {
-			if _, ok := err.(*AppError); ok {
-				rejected++
-				continue
-			}
-			return err
+			item.Reason = importFailure(err)
+		} else {
+			item.URI, item.Path = d.URI, d.Relative
 		}
-		saved++
+		result.Imports = append(result.Imports, item)
 	}
-	http.Redirect(w, req, "/?"+url.Values{"vault": {id}, "directory": {dir}, "upload": {strconv.Itoa(saved)}, "rejected": {strconv.Itoa(rejected)}}.Encode(), 303)
-	return nil
+	return a.finishWebResult(w, req, result, directoryURL(id, dir))
 }
 func (a *App) RunStdio(ctx context.Context) error { return a.MCP.Run(ctx, &mcp.StdioTransport{}) }

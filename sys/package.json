@@ -1,6 +1,6 @@
 {
   "name": "coral",
-  "version": "0.3.0",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
   "description": "A Markdown knowledge base, Obsidian Vault browser and read-write MCP server",
@@ -16,7 +16,8 @@
     "mcp:prod": "node scripts/run.mjs --stdio",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node scripts/go.mjs test ./... && tsx --test tests/*.test.ts tests/reference/*.test.ts",
-    "test:browser": "npm run build && playwright test"
+    "test:browser": "npm run build && playwright test",
+    "release:build": "node scripts/release.mjs"
   },
   "devDependencies": {
     "@codemirror/autocomplete": "^6.20.3",

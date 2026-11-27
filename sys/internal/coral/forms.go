@@ -23,6 +23,31 @@ func conflictActions(target string, conflict bool) string {
 	}
 	return `<div id="conflict-actions" class="btns"` + hide + `><a class="btn" data-latest-document href="` + escape(target) + `" target="_blank" rel="noopener">查看最新版本</a><button class="btn" type="button" data-download-draft hidden>下载我的草稿</button></div>`
 }
+
+func (r *Registry) directoryPicker(id, selected, label string) (string, error) {
+	dirs, err := r.Directories(id)
+	if err != nil {
+		return "", err
+	}
+	out := `<label>` + escape(label) + `<select name="directory">`
+	found := false
+	for _, dir := range dirs {
+		name := dir
+		if name == "" {
+			name = "知识库根目录"
+		}
+		chosen := ""
+		if dir == selected {
+			chosen, found = " selected", true
+		}
+		out += `<option value="` + escape(dir) + `"` + chosen + `>` + escape(name) + `</option>`
+	}
+	if !found {
+		out += `<option value="` + escape(selected) + `" selected>` + escape(selected) + `（目录不可用）</option>`
+	}
+	return out + `</select></label>`, nil
+}
+
 func (r *Registry) writePage(kind, id, uri, nonce string, fields url.Values, message string, conflict bool) (string, error) {
 	returnTo := searchReturn(fields.Get("return_to"))
 	title, content, dir := fields.Get("title"), fields.Get("content"), fields.Get("directory")
@@ -32,7 +57,18 @@ func (r *Registry) writePage(kind, id, uri, nonce string, fields url.Values, mes
 	action := "/new"
 	inputs := hidden("vault", id)
 	preview := `<input type="hidden" id="preview-vault" value="` + escape(id) + `">`
-	documentFields := `<div class="document-fields"><label>标题<input name="title" placeholder="文档标题" value="` + escape(title) + `" required maxlength="200"></label><label>保存目录<input name="directory" placeholder="根目录" value="` + escape(dir) + `" maxlength="1000"></label></div>`
+	documentFields := ""
+	if kind == "new" {
+		picker, err := r.directoryPicker(id, dir, "保存目录")
+		if err != nil {
+			return "", err
+		}
+		location := dir
+		if location == "" {
+			location = "知识库根目录"
+		}
+		documentFields = `<div class="document-fields"><label>标题<input name="title" placeholder="文档标题" value="` + escape(title) + `" required maxlength="200" autofocus></label><div class="save-location"><span>保存到：<span data-save-location>` + escape(location) + `</span></span><details><summary>更改位置</summary>` + picker + `</details></div></div>`
+	}
 	if kind != "new" {
 		d, err := r.Document(uri)
 		if err != nil {
@@ -98,7 +134,12 @@ func (r *Registry) writePage(kind, id, uri, nonce string, fields url.Values, mes
 			}
 			languages := hidden("source_language", source) + hidden("language", language)
 			if !f.Grouped {
-				languages = `<label>原文语言<select name="source_language">` + languageOptions(source) + `</select></label><label>新增语言<select name="language">` + languageOptions(language) + `</select></label>`
+				if source == "en" {
+					language = "zh"
+				} else {
+					language = "en"
+				}
+				languages = `<label>原文语言<select name="source_language">` + languageOptions(source) + `</select></label>` + hidden("language", language) + hidden("derive_language", "1") + `<p class="muted"><span data-target-language>新增另一种语言版本</span></p>`
 			}
 			documentFields = `<div class="document-fields language-fields"><label>标题<input name="title" value="` + escape(title) + `" required maxlength="200"></label>` + languages + `</div>`
 			preview += `<input type="hidden" id="preview-context-uri" value="` + escape(uri) + `">`
@@ -161,27 +202,14 @@ func (r *Registry) organizePage(kind, uri, nonce string, fields url.Values, mess
 	if kind == "move" {
 		heading = "移动笔记"
 		submit = "确认移动"
-		dirs, err := r.Directories(e.VaultID)
-		if err != nil {
-			return "", err
-		}
 		selected := dir
 		if _, ok := fields["directory"]; ok {
 			selected = fields.Get("directory")
 		}
-		field = `<label>目标文件夹<select name="directory">`
-		for _, p := range dirs {
-			label := p
-			if label == "" {
-				label = "知识库根目录"
-			}
-			sel := ""
-			if p == selected {
-				sel = " selected"
-			}
-			field += `<option value="` + escape(p) + `"` + sel + `>` + escape(label) + `</option>`
+		field, err = r.directoryPicker(e.VaultID, selected, "目标文件夹")
+		if err != nil {
+			return "", err
 		}
-		field += `</select></label>`
 	} else {
 		name := fields.Get("name")
 		if _, ok := fields["name"]; !ok {
@@ -220,7 +248,7 @@ func (r *Registry) simpleForm(kind, id, dir, nonce string, fields url.Values, me
 	back := "/"
 	action := "/vaults/new"
 	inputs := ""
-	fieldsHTML := `<label>仓库名称（英文）<input name="name" required maxlength="64" pattern="[A-Za-z][A-Za-z0-9_-]{0,63}" value="` + escape(fields.Get("name")) + `"></label><label>简介<textarea name="description" rows="3" maxlength="2000">` + escape(fields.Get("description")) + `</textarea></label>`
+	fieldsHTML := `<label>知识库名称<input name="name" required maxlength="200" value="` + escape(fields.Get("name")) + `" autofocus></label><label>简介（选填）<textarea name="description" rows="3" maxlength="2000">` + escape(fields.Get("description")) + `</textarea></label>`
 	o := pageOptions{}
 	if kind == "directory" {
 		if _, err := r.Browse(id, dir); err != nil {
@@ -268,7 +296,7 @@ func (r *Registry) trashPage(id, done, nonce string) (string, error) {
 		name := stringValue(v["name"])
 		vid := stringValue(v["id"])
 		version := stringValue(v["version"])
-		rows += `<li><div class="trash-description"><h2>` + icon("library") + escape(name) + `</h2><p class="muted">知识库</p><time class="muted">` + escape(stringValue(v["deleted_at"])) + `</time></div><div class="btns">` + form("restore", "vault", vid, "", version, "恢复知识库："+name, false) + form("purge", "vault", vid, "", version, "彻底删除知识库："+name, true) + `</div></li>`
+		rows += `<li><div class="trash-description"><h2>` + icon("library") + escape(name) + `</h2><p class="muted">知识库</p><time class="muted">` + escape(stringValue(v["deleted_at"])) + `</time></div><div class="btns">` + form("restore", "vault", vid, "", version, "恢复知识库："+name, false) + menu("回收知识库操作："+name, form("purge", "vault", vid, "", version, "彻底删除知识库："+name, true), "", "") + `</div></li>`
 	}
 	for _, v := range items {
 		rel := stringValue(v["path"])
@@ -276,7 +304,7 @@ func (r *Registry) trashPage(id, done, nonce string) (string, error) {
 		vault := stringValue(v["vault_id"])
 		entry := stringValue(v["id"])
 		version := stringValue(v["version"])
-		rows += `<li><div class="trash-description"><h2>` + icon("file-text") + escape(name) + `</h2><p class="muted">` + escape(stringValue(v["vault_name"])) + ` · ` + escape(rel) + `</p><time class="muted">` + escape(stringValue(v["deleted_at"])) + `</time></div><div class="btns">` + form("restore", "item", vault, entry, version, "恢复："+rel, false) + form("purge", "item", vault, entry, version, "彻底删除："+rel, true) + `</div></li>`
+		rows += `<li><div class="trash-description"><h2>` + icon("file-text") + escape(name) + `</h2><p class="muted">` + escape(stringValue(v["vault_name"])) + ` · ` + escape(rel) + `</p><time class="muted">` + escape(stringValue(v["deleted_at"])) + `</time></div><div class="btns">` + form("restore", "item", vault, entry, version, "恢复："+rel, false) + menu("回收内容操作："+rel, form("purge", "item", vault, entry, version, "彻底删除："+rel, true), "", "") + `</div></li>`
 	}
 	if rows == "" {
 		content += `<div class="empty">回收站为空。</div>`
@@ -292,7 +320,7 @@ func (r *Registry) trashPage(id, done, nonce string) (string, error) {
 	}
 	header := fmt.Sprintf(`<div class="page-head"><h1>回收站 <span class="muted">%d 项</span></h1><div class="btns">`, len(items)+len(vaults)) + button(back, "返回知识库", "arrow-left", false)
 	if rows != "" {
-		header += `<form action="/trash/empty" method="post" data-confirm="清空当前回收站中的全部内容？此操作无法撤销。">` + hidden("filter", id) + hidden("version", stringValue(listing["version"])) + `<button class="btn danger">` + icon("trash-2") + `清空回收站</button></form>`
+		header += menu("回收站操作", `<form action="/trash/empty" method="post" data-confirm="清空当前回收站中的全部内容？此操作无法恢复。">`+hidden("filter", id)+hidden("version", stringValue(listing["version"]))+`<button class="btn danger">`+icon("trash-2")+`清空回收站</button></form>`, "", "")
 	}
 	header += `</div></div>`
 	return r.layout("回收站", content, nonce, pageOptions{VaultID: id, Header: header})
@@ -305,9 +333,9 @@ func (r *Registry) lintPage(id, nonce string) (string, error) {
 	inbound, outbound := map[string]bool{}, map[string]bool{}
 	broken := []string{}
 	for _, d := range scan.Documents {
-		for _, target := range wikiTargets(d.Body) {
+		for _, target := range d.outgoingLinks() {
 			outbound[d.URI] = true
-			other := resolveLink(target, scan.Documents, &d, false)
+			other := scan.index.links.resolve(target, &d, false)
 			if other == nil {
 				broken = append(broken, `<li><a href="`+escape(viewURL(d.URI))+`">`+escape(d.Title)+`</a>：`+escape(target)+`</li>`)
 			} else {

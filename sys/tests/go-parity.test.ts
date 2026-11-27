@@ -44,6 +44,13 @@ test('native Go preserves MCP schemas, resource bytes, search entries and versio
     const bases = [go.base, `http://127.0.0.1:${address.port}`];
     await Promise.all(clients.map((client, index) => client.connect(new StreamableHTTPClientTransport(new URL(bases[index] + '/mcp')))));
     const tools = await Promise.all(clients.map(client => client.listTools()));
+    const createVault = tools[0].tools.find(tool => tool.name === 'create_vault')!;
+    assert.deepEqual(createVault.inputSchema.properties?.display_name, {
+      type: 'string', minLength: 1, maxLength: 200,
+      description: 'Optional human-readable Vault name, including Chinese. Does not change the stable ID or directory derived from name.',
+    });
+    // display_name is the one additive schema extension to the frozen reference.
+    delete createVault.inputSchema.properties!.display_name;
     const normalize = (list: typeof tools[number]) => list.tools.map(tool => ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema })).sort((a, b) => a.name.localeCompare(b.name));
     assert.deepEqual(normalize(tools[0]), normalize(tools[1]));
     const call = async (client: Client, name: string, args = {}) => { const result = await client.callTool({ name, arguments: args }); assert.ok(!result.isError, JSON.stringify(result)); return result.structuredContent!; };

@@ -14,6 +14,8 @@
 8. 删除文档、目录、知识库均进入回收站。目录删除包含其后代文档和附件；外部知识库删除只回收注册记录。仅在用户要求的范围内操作。用 `list_trash` 获取回收版本，再调用 `restore_trash` 或 `restore_vault` 恢复；恢复拒绝覆盖同名内容。发生版本冲突时重新读取并合并，不能绕过版本检查。
 9. 调用 `create_document`、`create_language_version` 或 `update_document` 前，按 `get_writing_guide({topic:"ci"})` 完成独立的“说人话”审查，修正后再检查。保存后用返回的 URI 再次 `read_document` 核对内容与版本。`download_document` 返回原始字节的 Base64 资源。向用户给出实际文档 URI 和改动说明；读回源码不等于验证了浏览器效果，只有实际打开并操作后才能报告交互验证通过。
 
+用户明确要求新建知识库时，`create_vault.name` 指定稳定的英文目录名和 ID：以英文字母开头，其后可用字母、数字、连字符和下划线，最长 64 字符。可选 `display_name` 设置中文等显示名称，`description` 保存简介；省略 `display_name` 时沿用原有名称行为。网页只要求填写显示名称，由系统生成目录名，不改变 MCP 的既有 `name` 契约。
+
 ## 中英文版本
 
 一篇笔记可以有中文和英文两个 Markdown 文件。网页目录、MCP 列表和搜索按笔记显示一次，有中文时统一以中文作为默认入口；即使英文先创建，补充中文后也默认打开中文。在阅读页主动点击「English」才切换到英文。没有中文的已有笔记仍可正常打开，不隐藏唯一的内容。
@@ -47,7 +49,7 @@ Coral 不运行翻译模型，也不自动同步两种语言。后续修改使�
 
 ### 段落首行缩进
 
-需要首行缩进时，在文档开头的 YAML frontmatter 中设置 `paragraph_indent: 2em`。这是按文档选择的排版属性，不按语言自动开启；未设置该属性或设置为 `none` 时不缩进。以下是完整 Markdown 示例，可直接作为 `create_document.content` 或 `update_document.content`，去掉外层围栏；`title` 属性可省略，创建时仍以工具的 `title` 参数决定标题：
+英文版本的正文段落默认首行缩进两个字宽；已有英文版本未设置缩进属性时也会按此显示。`create_language_version` 创建英文版本时，默认补充 `paragraph_indent: 2em`；显式设置 `paragraph_indent: none` 可以关闭。中文文档需要首行缩进时，在开头的 YAML frontmatter 中设置 `paragraph_indent: 2em`。以下是完整 Markdown 示例，可直接作为 `create_document.content` 或 `update_document.content`，去掉外层围栏；`title` 属性可省略，创建时仍以工具的 `title` 参数决定标题：
 
 ```markdown
 ---
@@ -66,7 +68,7 @@ paragraph_indent: 2em
 
 Markdown 没有独立的图注类型。图片、HTML/Mermaid 图块或表格之后，紧邻的独立编号说明如 `图 1：说明`、`表 2：说明`、`Figure 1: caption` 会按图注排版，也可整段加粗或斜体。其他普通段落仍按正文处理。
 
-关闭时将属性改为 `paragraph_indent: none`，并保留其他仍需使用的属性。也可提交不含该字段的完整 frontmatter；显式空属性块也能关闭，但会移除未重传的自定义属性。**省略整个 frontmatter 会保留现有属性**，已有缩进不会因此关闭。无需新增工具或参数，使用现有创建、更新接口的完整 `content` 即可，读取、搜索和版本冲突保护规则不变。
+关闭时将属性改为 `paragraph_indent: none`，并保留其他仍需使用的属性。中文文档也可提交不含该字段的完整 frontmatter 来关闭；英文版本移除该字段后会恢复默认缩进。显式空属性块会移除未重传的自定义属性；**省略整个 frontmatter 会保留现有属性**，已有缩进不会因此关闭。无需新增工具或参数，使用现有创建、更新接口的完整 `content` 即可，读取、搜索和版本冲突保护规则不变。
 
 编辑实时预览使用当前正在编辑的 YAML；保存后，阅读页使用已保存的设置。保存后读回可核对 `paragraph_indent`、正文与版本；确认视觉效果还需查看实际阅读页或编辑预览，不能把读回源码称为显示检查通过。
 

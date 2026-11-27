@@ -413,6 +413,7 @@ func rewriteLinks(documents []Document, mapping map[string]string, files map[str
 			relocated[i].URI = ResourceURI(d.VaultID, next)
 		}
 	}
+	originalLinks, relocatedLinks := newLinkIndex(documents), newLinkIndex(relocated)
 	changes := []rawChange{}
 	unresolved := []UnresolvedLink{}
 	for index, d := range documents {
@@ -440,7 +441,7 @@ func rewriteLinks(documents []Document, mapping map[string]string, files map[str
 			wiki := dest.Kind == "wiki" || dest.Kind == "wiki-image"
 			image := dest.Kind == "image" || dest.Kind == "wiki-image"
 			if dest.Kind == "wiki" {
-				original := resolveLink(target, documents, &d, false)
+				original := originalLinks.resolve(target, &d, false)
 				if original == nil {
 					report(target, "目标不存在或名称不唯一")
 					continue
@@ -449,14 +450,14 @@ func rewriteLinks(documents []Document, mapping map[string]string, files map[str
 				if next == "" {
 					next = original.Relative
 				}
-				current := resolveLink(target, relocated, &after, false)
+				current := relocatedLinks.resolve(target, &after, false)
 				if current == nil || current.URI != ResourceURI(d.VaultID, next) {
 					replacement = next
 					if !isMarkdown(pathname) {
 						replacement = stripExtension(next)
 					}
 					replacement = wikiPath(replacement) + fragment
-					check := resolveLink(replacement, relocated, &after, false)
+					check := relocatedLinks.resolve(replacement, &after, false)
 					if check == nil || check.URI != ResourceURI(d.VaultID, next) {
 						return nil, nil, fail(409, "无法明确保持 Wiki 链接目标，尚未整理："+d.URI)
 					}
@@ -496,7 +497,7 @@ func rewriteLinks(documents []Document, mapping map[string]string, files map[str
 				}
 				originalPath := path.Clean(path.Join(parent(d.Relative), decoded))
 				if !image {
-					original := resolveLink(pathname, documents, &d, true)
+					original := originalLinks.resolve(pathname, &d, true)
 					if original == nil {
 						report(target, "目标不存在")
 						continue

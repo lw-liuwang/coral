@@ -10,6 +10,7 @@ const notice = await readFile(resolve(output, 'README.txt'));
 await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
 await writeFile(resolve(output, 'README.txt'), notice);
-await build({ entryPoints: ['src/client.ts', 'src/mermaid-frame.ts', 'src/html-frame.ts', 'src/html-runtime.ts'], bundle: true, minify: true, outdir: output });
+await build({ entryPoints: ['src/client.ts'], bundle: true, splitting: true, format: 'esm', chunkNames: 'chunks/[name]-[hash]', minify: true, outdir: output });
+await build({ entryPoints: ['src/mermaid-frame.ts', 'src/html-frame.ts', 'src/html-runtime.ts'], bundle: true, minify: true, outdir: output });
 await cp('static', output, { recursive: true });
 await cp(dirname(require.resolve('katex/dist/katex.min.css')), resolve(output, 'katex'), { recursive: true });

@@ -54,8 +54,13 @@ func writingGuide(topic string) (map[string]any, error) {
 	return map[string]any{"uri": GuideURI, "topic": topic, "markdown": guide}, nil
 }
 func (r *Registry) access(ctx context.Context, write bool, fn func() error) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	if write {
+		r.cache.gate.Lock()
+		defer r.cache.gate.Unlock()
+	} else {
+		r.cache.gate.RLock()
+		defer r.cache.gate.RUnlock()
+	}
 	if !write {
 		return fn()
 	}
@@ -136,7 +141,7 @@ func (r *Registry) callTool(name string, a map[string]any) (map[string]any, erro
 		}
 		return map[string]any{"vault_uri": ResourceURI(id, ""), "directory": s("directory"), "entries": entries[min(cursor, len(entries)):min(cursor+limit, len(entries))], "total": len(entries), "next_cursor": next, "skipped_documents": b.Skipped}, nil
 	case "create_vault":
-		v, err := r.CreateVault(s("name"), s("description"))
+		v, err := r.CreateVaultWithDisplayName(s("name"), s("description"), s("display_name"))
 		return map[string]any{"vault_id": v.ID, "name": v.Name, "description": v.Description, "uri": ResourceURI(v.ID, "")}, err
 	case "delete_vault":
 		err := r.DeleteVault(id, version)
@@ -224,6 +229,7 @@ func NewMCP(r *Registry) (*mcp.Server, error) {
 		}
 		name := tool.Name
 		server.AddTool(tool, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			r := r.scoped(tool.Annotations != nil && tool.Annotations.ReadOnlyHint)
 			args := map[string]any{}
 			if len(request.Params.Arguments) > 0 {
 				if err := json.Unmarshal(request.Params.Arguments, &args); err != nil {
@@ -279,6 +285,7 @@ func NewMCP(r *Registry) (*mcp.Server, error) {
 		return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{URI: GuideURI, MIMEType: "text/markdown", Text: stringValue(guide["markdown"])}}}, nil
 	})
 	server.AddResourceTemplate(&mcp.ResourceTemplate{URITemplate: "coral://vault/{vault_id}/{+path}", Name: "document", MIMEType: "text/markdown", Description: "Raw Markdown; use read_document pagination or download_document for large files."}, func(ctx context.Context, request *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		r := r.scoped(true)
 		var d Document
 		err := r.access(ctx, false, func() error {
 			var err error

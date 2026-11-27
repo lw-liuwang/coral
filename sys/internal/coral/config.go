@@ -11,7 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const Version = "0.3.0"
+const Version = "3.0.0"
 
 type Config struct {
 	Server struct {
